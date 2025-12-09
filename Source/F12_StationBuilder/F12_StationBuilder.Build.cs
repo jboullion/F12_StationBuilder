@@ -15,7 +15,10 @@ public class F12_StationBuilder : ModuleRules
 			"Engine", 
 			"InputCore", 
 			"EnhancedInput", 
-			"ProceduralMeshComponent"
+			"ProceduralMeshComponent",  // Required for procedural mesh generation
+			"UMG",                       // Required for UI widgets
+			"Slate",                     // Required for UI
+			"SlateCore"                  // Required for UI
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });

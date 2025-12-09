@@ -12,10 +12,13 @@ AF12Module::AF12Module()
     USceneComponent* Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
     RootComponent = Root;
 
+    // Initialize tile arrays
     TileVisibility.SetNum(12);
+    TileMaterialIndices.SetNum(12);
     for (int32 i = 0; i < 12; i++)
     {
         TileVisibility[i] = true;
+        TileMaterialIndices[i] = 0;
     }
 }
 
@@ -317,8 +320,92 @@ void AF12Module::SetTileVisible(int32 TileIndex, bool bVisible)
         if (TileMeshes.IsValidIndex(TileIndex) && TileMeshes[TileIndex])
         {
             TileMeshes[TileIndex]->SetVisibility(bVisible);
+            
+            // Also toggle collision
+            if (bVisible)
+            {
+                TileMeshes[TileIndex]->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+            }
+            else
+            {
+                TileMeshes[TileIndex]->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            }
         }
     }
+}
+
+bool AF12Module::IsTileVisible(int32 TileIndex) const
+{
+    if (TileIndex >= 0 && TileIndex < 12 && TileVisibility.IsValidIndex(TileIndex))
+    {
+        return TileVisibility[TileIndex];
+    }
+    return false;
+}
+
+void AF12Module::SetTileMaterial(int32 TileIndex, UMaterialInterface* Material)
+{
+    if (TileIndex >= 0 && TileIndex < 12 && TileMeshes.IsValidIndex(TileIndex) && TileMeshes[TileIndex])
+    {
+        TileMeshes[TileIndex]->SetMaterial(0, Material);
+    }
+}
+
+void AF12Module::SetTileMaterialIndex(int32 TileIndex, int32 MaterialIndex)
+{
+    if (TileIndex >= 0 && TileIndex < 12 && TileMaterials.Num() > 0)
+    {
+        int32 ClampedIndex = MaterialIndex % TileMaterials.Num();
+        TileMaterialIndices[TileIndex] = ClampedIndex;
+        
+        if (TileMaterials.IsValidIndex(ClampedIndex))
+        {
+            SetTileMaterial(TileIndex, TileMaterials[ClampedIndex]);
+        }
+    }
+}
+
+void AF12Module::CycleTileMaterial(int32 TileIndex)
+{
+    if (TileIndex >= 0 && TileIndex < 12 && TileMaterials.Num() > 0)
+    {
+        int32 CurrentIndex = TileMaterialIndices.IsValidIndex(TileIndex) ? TileMaterialIndices[TileIndex] : 0;
+        int32 NextIndex = (CurrentIndex + 1) % TileMaterials.Num();
+        SetTileMaterialIndex(TileIndex, NextIndex);
+    }
+}
+
+void AF12Module::SetAllTilesMaterial(UMaterialInterface* Material)
+{
+    for (int32 i = 0; i < 12; i++)
+    {
+        SetTileMaterial(i, Material);
+    }
+}
+
+void AF12Module::CycleAllTilesMaterial()
+{
+    if (TileMaterials.Num() > 0)
+    {
+        CurrentMaterialIndex = (CurrentMaterialIndex + 1) % TileMaterials.Num();
+        
+        for (int32 i = 0; i < 12; i++)
+        {
+            SetTileMaterialIndex(i, CurrentMaterialIndex);
+        }
+    }
+}
+
+int32 AF12Module::GetTileIndexFromComponent(UPrimitiveComponent* Component) const
+{
+    for (int32 i = 0; i < TileMeshes.Num(); i++)
+    {
+        if (TileMeshes[i] == Component)
+        {
+            return i;
+        }
+    }
+    return -1;
 }
 
 // New helper function for tile generation (not in header yet, but add if needed)
