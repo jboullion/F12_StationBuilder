@@ -1,9 +1,11 @@
 // F12BuilderController.cpp
 // Implementation of the builder player controller with Mode System
-// Includes: Undo/Redo, Drag Build Mode
+// Includes: Undo/Redo, Drag Build Mode, Procedural Generation
 
 #include "F12BuilderController.h"
 #include "F12Module.h"
+#include "F12ProceduralGenerator.h"
+#include "F12GeneratorWidget.h"
 #include "ProceduralMeshComponent/Public/ProceduralMeshComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
@@ -22,6 +24,9 @@ void AF12BuilderController::BeginPlay()
 
     // Create action history
     ActionHistory = NewObject<UF12ActionHistory>(this, TEXT("ActionHistory"));
+
+    // Create procedural generator
+    ProceduralGenerator = NewObject<UF12ProceduralGenerator>(this, TEXT("ProceduralGenerator"));
 
     // Find or create the grid system
     GridSystem = Cast<AF12GridSystem>(UGameplayStatics::GetActorOfClass(GetWorld(), AF12GridSystem::StaticClass()));
@@ -86,6 +91,23 @@ void AF12BuilderController::BeginPlay()
             UE_LOG(LogTemp, Log, TEXT("HUD Widget created and added to viewport"));
         }
     }
+
+    // Initialize procedural generator
+    if (ProceduralGenerator)
+    {
+        ProceduralGenerator->Initialize(GridSystem, this);
+    }
+
+    // Spawn the generator widget
+    if (GeneratorWidgetClass)
+    {
+        GeneratorWidget = CreateWidget<UF12GeneratorWidget>(this, GeneratorWidgetClass);
+        if (GeneratorWidget)
+        {
+            GeneratorWidget->AddToViewport(10);  // Higher Z-order to be on top
+            UE_LOG(LogTemp, Log, TEXT("Generator Widget created"));
+        }
+    }
 }
 
 void AF12BuilderController::SetupInputComponent()
@@ -114,6 +136,9 @@ void AF12BuilderController::SetupInputComponent()
     // Undo/Redo
     InputComponent->BindAction("Undo", IE_Pressed, this, &AF12BuilderController::OnUndo);
     InputComponent->BindAction("Redo", IE_Pressed, this, &AF12BuilderController::OnRedo);
+
+    // Generator panel toggle
+    InputComponent->BindAction("ToggleGenerator", IE_Pressed, this, &AF12BuilderController::OnToggleGenerator);
 }
 
 void AF12BuilderController::Tick(float DeltaTime)
@@ -224,6 +249,7 @@ void AF12BuilderController::OnScrollDown()
 
 void AF12BuilderController::OnUndo() { Undo(); }
 void AF12BuilderController::OnRedo() { Redo(); }
+void AF12BuilderController::OnToggleGenerator() { ToggleGeneratorPanel(); }
 
 // === MAIN ACTIONS ===
 
@@ -1177,4 +1203,19 @@ int32 AF12BuilderController::GetUndoCount() const
 int32 AF12BuilderController::GetRedoCount() const
 {
     return ActionHistory ? ActionHistory->GetRedoCount() : 0;
+}
+
+// === GENERATOR PANEL ===
+
+void AF12BuilderController::ToggleGeneratorPanel()
+{
+    if (GeneratorWidget)
+    {
+        GeneratorWidget->TogglePanel();
+    }
+}
+
+bool AF12BuilderController::IsGeneratorPanelVisible() const
+{
+    return GeneratorWidget && GeneratorWidget->IsPanelVisible();
 }

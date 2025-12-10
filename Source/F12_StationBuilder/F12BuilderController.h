@@ -1,6 +1,6 @@
 // F12BuilderController.h
 // Player controller for the F12 Station Builder with Mode System
-// Includes: Undo/Redo, Drag Build Mode
+// Includes: Undo/Redo, Drag Build Mode, Procedural Generation
 
 #pragma once
 
@@ -12,6 +12,8 @@
 #include "F12BuilderController.generated.h"
 
 class AF12Module;
+class UF12ProceduralGenerator;
+class UF12GeneratorWidget;
 
 // Builder modes
 UENUM(BlueprintType)
@@ -92,6 +94,19 @@ public:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|History")
     UF12ActionHistory* ActionHistory;
 
+    // === PROCEDURAL GENERATION ===
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|Generation")
+    UF12ProceduralGenerator* ProceduralGenerator;
+
+    // Widget class for generation UI
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|Generation")
+    TSubclassOf<UUserWidget> GeneratorWidgetClass;
+
+    // Reference to spawned generator widget
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|Generation")
+    UF12GeneratorWidget* GeneratorWidget;
+
     // === DRAG BUILD SETTINGS ===
     
     // Maximum number of modules that can be placed in a single drag
@@ -150,6 +165,14 @@ public:
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|History")
     bool CanRedo() const;
 
+    // === PROCEDURAL GENERATION ===
+    
+    UFUNCTION(BlueprintCallable, Category = "Builder|Generation")
+    void ToggleGeneratorPanel();
+
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|Generation")
+    bool IsGeneratorPanelVisible() const;
+
     // === HUD HELPERS ===
     
     // Get current paint color for HUD display
@@ -190,6 +213,7 @@ protected:
     void OnModifierReleased();
     void OnUndo();
     void OnRedo();
+    void OnToggleGenerator();
 
     // State
     bool bModifierHeld = false;  // Shift key for tile-level actions and drag build
