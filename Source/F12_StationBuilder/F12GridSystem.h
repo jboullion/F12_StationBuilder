@@ -31,6 +31,11 @@ struct FF12GridCoord
         return X == Other.X && Y == Other.Y && Z == Other.Z;
     }
 
+    bool operator!=(const FF12GridCoord& Other) const
+    {
+        return !(*this == Other);
+    }
+
     friend uint32 GetTypeHash(const FF12GridCoord& Coord)
     {
         return HashCombine(HashCombine(GetTypeHash(Coord.X), GetTypeHash(Coord.Y)), GetTypeHash(Coord.Z));
@@ -86,16 +91,17 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Grid")
     FF12GridCoord GetNeighborCoordForFace(FF12GridCoord ModuleCoord, int32 FaceIndex);
 
+    // The 12 neighbor offset directions in grid space (public for drag build)
+    // These correspond to the 12 faces of the rhombic dodecahedron
+    UFUNCTION(BlueprintCallable, Category = "Grid")
+    TArray<FIntVector> GetNeighborOffsets();
+    
+    // Face normals for determining which face was hit (public for visualization)
+    UFUNCTION(BlueprintCallable, Category = "Grid")
+    TArray<FVector> GetFaceNormals();
+
 protected:
     // Map of occupied positions to module actors
     UPROPERTY()
     TMap<FF12GridCoord, AActor*> OccupiedPositions;
-
-private:
-    // The 12 neighbor offset directions in grid space
-    // These correspond to the 12 faces of the rhombic dodecahedron
-    TArray<FIntVector> GetNeighborOffsets();
-    
-    // Face normals for determining which face was hit
-    TArray<FVector> GetFaceNormals();
 };
