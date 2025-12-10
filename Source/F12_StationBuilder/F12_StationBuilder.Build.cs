@@ -1,41 +1,36 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+// F12_StationBuilder.Build.cs
+// Build configuration for the F12 Station Builder project
+// Updated with Space Environment dependencies
 
 using UnrealBuildTool;
 
 public class F12_StationBuilder : ModuleRules
 {
-	public F12_StationBuilder(ReadOnlyTargetRules Target) : base(Target)
-	{
-		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-	
-		PublicDependencyModuleNames.AddRange(new string[]
-		{
-			"Core", 
-			"CoreUObject", 
-			"Engine", 
-			"InputCore", 
-			"EnhancedInput", 
-			// Procedural mesh for F12 modules
-			"ProceduralMeshComponent",
+    public F12_StationBuilder(ReadOnlyTargetRules Target) : base(Target)
+    {
+        PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+    
+        PublicDependencyModuleNames.AddRange(new string[]
+        {
+            "Core", 
+            "CoreUObject", 
+            "Engine", 
+            "InputCore", 
+            "EnhancedInput",
             
-			// UI/HUD
-			"UMG",
-			"Slate",
-			"SlateCore",
+            // Procedural mesh for F12 modules
+            "ProceduralMeshComponent",
             
-			// Rendering for post-process and materials
-			"RenderCore",
-			"RHI"
-		});
+            // UI/HUD
+            "UMG",
+            "Slate",
+            "SlateCore",
+            
+            // Rendering for post-process and materials
+            "RenderCore",
+            "RHI"
+        });
 
-		PrivateDependencyModuleNames.AddRange(new string[] {  });
-
-		// Uncomment if you are using Slate UI
-		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
-		
-		// Uncomment if you are using online features
-		// PrivateDependencyModuleNames.Add("OnlineSubsystem");
-
-		// To include OnlineSubsystemSteam, add it to the plugins section in your uproject file with the Enabled attribute set to true
-	}
+        PrivateDependencyModuleNames.AddRange(new string[] { });
+    }
 }

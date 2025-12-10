@@ -1,5 +1,6 @@
 // F12BuilderController.h
 // Player controller for the F12 Station Builder with Mode System
+// Updated with Undo/Redo and Drag-Build functionality
 
 #pragma once
 
@@ -10,6 +11,8 @@
 #include "F12BuilderController.generated.h"
 
 class AF12Module;
+class UF12CommandHistory;
+struct FF12Command;
 
 // Builder modes
 UENUM(BlueprintType)
@@ -47,19 +50,17 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|Paint")
     TArray<UMaterialInterface*> PaintMaterials;
 
-    // Parallel array of colors for HUD display (set these to match your materials)
+    // Parallel array of colors for HUD display
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|Paint")
     TArray<FLinearColor> PaintColors;
 
     // === DELETE HIGHLIGHT ===
     
-    // Material to show when hovering in delete mode (create a red emissive material)
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|Highlight")
     UMaterialInterface* DeleteHighlightMaterial;
 
     // === HUD ===
     
-    // Widget class to spawn for HUD (set this to your WBP_BuilderHUD)
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|HUD")
     TSubclassOf<UUserWidget> HUDWidgetClass;
 
@@ -84,6 +85,40 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder")
     float TraceDistance = 10000.0f;
+
+    // === UNDO/REDO SYSTEM ===
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|History")
+    UF12CommandHistory* CommandHistory;
+
+    // === DRAG BUILD SYSTEM ===
+    
+    // Is drag-build currently active?
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|DragBuild")
+    bool bIsDragging = false;
+
+    // Starting coordinate of drag
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|DragBuild")
+    FF12GridCoord DragStartCoord;
+
+    // Preview modules shown during drag
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|DragBuild")
+    TArray<AF12Module*> DragPreviewModules;
+
+    // Coordinates that will be placed on drag release
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|DragBuild")
+    TArray<FF12GridCoord> DragCoords;
+
+    // Maximum modules per drag operation
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|DragBuild")
+    int32 MaxDragModules = 20;
+
+    // Drag plane tracking (for tracking mouse in 3D space during drag)
+    FVector DragStartWorldPos;
+    FVector DragPlaneNormal;
+    
+    // Face-based direction for straight-line dragging
+    int32 DragFaceIndex = -1;  // Which face was clicked to start the drag
 
     // === MODE SWITCHING ===
     
@@ -111,27 +146,40 @@ public:
     void RemoveModule();
 
     UFUNCTION(BlueprintCallable, Category = "Builder")
-    void PrimaryAction();      // Left click - context dependent on mode
+    void PrimaryAction();
 
     UFUNCTION(BlueprintCallable, Category = "Builder")
-    void SecondaryAction();    // Right click - context dependent on mode
+    void SecondaryAction();
 
     UFUNCTION(BlueprintCallable, Category = "Builder")
-    void CyclePaintMaterial(); // Scroll wheel in paint mode
+    void CyclePaintMaterial();
+
+    // === UNDO/REDO ===
+    
+    UFUNCTION(BlueprintCallable, Category = "Builder|History")
+    void Undo();
+
+    UFUNCTION(BlueprintCallable, Category = "Builder|History")
+    void Redo();
+
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|History")
+    bool CanUndo() const;
+
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|History")
+    bool CanRedo() const;
 
     // === HUD HELPERS ===
     
-    // Get current paint color for HUD display
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|HUD")
     FLinearColor GetCurrentPaintColor() const;
 
-    // Get mode name as string
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|HUD")
     FString GetModeName() const;
 
 protected:
     // Input handlers
     void OnPrimaryAction();
+    void OnPrimaryActionReleased();
     void OnSecondaryAction();
     void OnCycleMode();
     void OnSetBuildMode();
@@ -141,9 +189,12 @@ protected:
     void OnScrollDown();
     void OnModifierPressed();
     void OnModifierReleased();
+    void OnUndo();
+    void OnRedo();
 
     // State
-    bool bModifierHeld = false;  // Shift key for tile-level actions
+    bool bModifierHeld = false;
+    bool bPrimaryHeld = false;
 
     // === HIGHLIGHT TRACKING ===
     UPROPERTY()
@@ -154,24 +205,38 @@ protected:
     UPROPERTY()
     TArray<UMaterialInterface*> HighlightedOriginalMaterials;
 
-    // Update the ghost preview position
+    // Update functions
     void UpdateGhostPreview();
-
-    // Delete mode highlight
     void UpdateDeleteHighlight();
     void ClearHighlight();
 
-    // Perform trace from camera
-    bool TraceFromCamera(FHitResult& OutHit);
+    // Drag build functions
+    void StartDrag();
+    void UpdateDrag();
+    void EndDrag();
+    void CancelDrag();
+    void ClearDragPreview();
+    TArray<FF12GridCoord> CalculateDragLine(const FF12GridCoord& Start, const FF12GridCoord& End);
 
-    // Get the module and tile under cursor
+    // Utility
+    bool TraceFromCamera(FHitResult& OutHit);
     AF12Module* GetModuleUnderCursor(int32& OutTileIndex);
 
     // Mode-specific action handlers
     void HandleBuildPrimary();
+    void HandleBuildPrimaryRelease();
     void HandleBuildSecondary();
     void HandlePaintPrimary();
     void HandlePaintSecondary();
     void HandleDeletePrimary();
     void HandleDeleteSecondary();
+
+    // Command helpers (creates and executes commands with history)
+    void ExecutePlaceModule(const FF12GridCoord& Coord);
+    void ExecutePlaceMultiple(const TArray<FF12GridCoord>& Coords);
+    void ExecuteDeleteModule(const FF12GridCoord& Coord);
+    void ExecutePaintTile(AF12Module* Module, int32 TileIndex, int32 NewMaterialIndex);
+    void ExecutePaintModule(AF12Module* Module, int32 NewMaterialIndex);
+    void ExecuteDeleteTile(AF12Module* Module, int32 TileIndex);
+    void ExecuteRestoreTile(AF12Module* Module, int32 TileIndex);
 };
