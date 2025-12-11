@@ -6,6 +6,7 @@
 #include "F12InstancedRenderer.h"
 #include "F12ProceduralGenerator.h"
 #include "F12GeneratorWidget.h"
+#include "F12BuilderPawn.h"
 #include "Components/StaticMeshComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
@@ -91,6 +92,13 @@ void AF12BuilderController::BeginPlay()
 
     // Create ghost preview mesh components
     InitializeGhostPreview();
+
+    // Cache the builder pawn reference
+    CachedBuilderPawn = Cast<AF12BuilderPawn>(GetPawn());
+    if (CachedBuilderPawn)
+    {
+        UE_LOG(LogTemp, Log, TEXT("Found BuilderPawn for third-person view"));
+    }
 }
 
 void AF12BuilderController::SetupInputComponent()
@@ -106,18 +114,29 @@ void AF12BuilderController::SetupInputComponent()
     InputComponent->BindAction("PaintMode", IE_Pressed, this, &AF12BuilderController::OnSetPaintMode);
     InputComponent->BindAction("DeleteMode", IE_Pressed, this, &AF12BuilderController::OnSetDeleteMode);
     
-    InputComponent->BindAction("ScrollUp", IE_Pressed, this, &AF12BuilderController::OnScrollUp);
-    InputComponent->BindAction("ScrollDown", IE_Pressed, this, &AF12BuilderController::OnScrollDown);
+    InputComponent->BindAction("ZoomIn", IE_Pressed, this, &AF12BuilderController::OnScrollUp);
+    InputComponent->BindAction("ZoomOut", IE_Pressed, this, &AF12BuilderController::OnScrollDown);
     
     InputComponent->BindAction("Modifier", IE_Pressed, this, &AF12BuilderController::OnModifierPressed);
     InputComponent->BindAction("Modifier", IE_Released, this, &AF12BuilderController::OnModifierReleased);
 
     InputComponent->BindAction("ToggleGenerator", IE_Pressed, this, &AF12BuilderController::OnToggleGenerator);
+    
+    // Camera rotation (handled by controller, forwarded to pawn)
+    InputComponent->BindAction("CameraRotate", IE_Pressed, this, &AF12BuilderController::OnCameraRotatePressed);
+    InputComponent->BindAction("CameraRotate", IE_Released, this, &AF12BuilderController::OnCameraRotateReleased);
+    
+    // Paint cycling
+    InputComponent->BindAction("CyclePaint", IE_Pressed, this, &AF12BuilderController::OnCyclePaint);
 }
 
 void AF12BuilderController::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
+    
+    // Handle camera rotation
+    UpdateCameraRotation();
+    
     UpdatePreview();
     
     // Update drag preview in build mode
@@ -199,6 +218,19 @@ void AF12BuilderController::Tick(float DeltaTime)
             bHasHighlight = false;
         }
     }
+}
+
+// === CAMERA HELPERS ===
+
+AF12BuilderPawn* AF12BuilderController::GetBuilderPawn() const
+{
+    if (CachedBuilderPawn)
+    {
+        return CachedBuilderPawn;
+    }
+    
+    // Try to find it if not cached
+    return Cast<AF12BuilderPawn>(GetPawn());
 }
 
 // === MODE SYSTEM ===
@@ -304,25 +336,64 @@ void AF12BuilderController::OnSetDeleteMode() { SetDeleteMode(); }
 
 void AF12BuilderController::OnScrollUp()
 {
-    if (CurrentMode == EF12BuilderMode::Paint && PaintColors.Num() > 0)
+    // Always zoom camera (use T to cycle paints)
+    if (AF12BuilderPawn* BuilderPawn = GetBuilderPawn())
     {
-        CurrentPaintMaterialIndex = (CurrentPaintMaterialIndex + 1) % PaintColors.Num();
-        UE_LOG(LogTemp, Log, TEXT("Paint material: %d"), CurrentPaintMaterialIndex);
+        BuilderPawn->ZoomCamera(-BuilderPawn->ZoomSpeed);
     }
 }
 
 void AF12BuilderController::OnScrollDown()
 {
-    if (CurrentMode == EF12BuilderMode::Paint && PaintColors.Num() > 0)
+    // Always zoom camera (use T to cycle paints)
+    if (AF12BuilderPawn* BuilderPawn = GetBuilderPawn())
     {
-        CurrentPaintMaterialIndex = (CurrentPaintMaterialIndex - 1 + PaintColors.Num()) % PaintColors.Num();
-        UE_LOG(LogTemp, Log, TEXT("Paint material: %d"), CurrentPaintMaterialIndex);
+        BuilderPawn->ZoomCamera(BuilderPawn->ZoomSpeed);
     }
 }
 
 void AF12BuilderController::OnModifierPressed() { bModifierHeld = true; }
 void AF12BuilderController::OnModifierReleased() { bModifierHeld = false; }
 void AF12BuilderController::OnToggleGenerator() { ToggleGeneratorPanel(); }
+
+void AF12BuilderController::OnCyclePaint()
+{
+    if (PaintColors.Num() > 0)
+    {
+        CurrentPaintMaterialIndex = (CurrentPaintMaterialIndex + 1) % PaintColors.Num();
+        UE_LOG(LogTemp, Log, TEXT("Paint material cycled to: %d"), CurrentPaintMaterialIndex);
+    }
+}
+
+void AF12BuilderController::OnCameraRotatePressed()
+{
+    bIsRotatingCamera = true;
+}
+
+void AF12BuilderController::OnCameraRotateReleased()
+{
+    bIsRotatingCamera = false;
+}
+
+void AF12BuilderController::UpdateCameraRotation()
+{
+    if (!bIsRotatingCamera)
+        return;
+    
+    AF12BuilderPawn* BuilderPawn = GetBuilderPawn();
+    if (!BuilderPawn)
+        return;
+    
+    float MouseX, MouseY;
+    GetInputMouseDelta(MouseX, MouseY);
+    
+    if (MouseX != 0.0f || MouseY != 0.0f)
+    {
+        // Forward rotation to pawn (Y is NOT inverted - mouse up = look up)
+        float Sensitivity = BuilderPawn->CameraRotationSpeed;
+        BuilderPawn->RotateCamera(MouseX * Sensitivity, MouseY * Sensitivity);
+    }
+}
 
 // === ACTIONS ===
 
@@ -473,6 +544,12 @@ bool AF12BuilderController::TraceFromCamera(FHitResult& OutHit)
         FVector TraceEnd = WorldLocation + (WorldDirection * TraceDistance);
         
         FCollisionQueryParams QueryParams;
+        
+        // Ignore the pawn we're controlling
+        if (GetPawn())
+        {
+            QueryParams.AddIgnoredActor(GetPawn());
+        }
         
         return GetWorld()->LineTraceSingleByChannel(OutHit, TraceStart, TraceEnd, ECC_Visibility, QueryParams);
     }

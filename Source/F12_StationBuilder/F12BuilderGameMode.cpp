@@ -3,13 +3,13 @@
 
 #include "F12BuilderGameMode.h"
 #include "F12BuilderController.h"
-#include "GameFramework/SpectatorPawn.h"
+#include "F12BuilderPawn.h"
 
 AF12BuilderGameMode::AF12BuilderGameMode()
 {
     // Use our custom player controller
     PlayerControllerClass = AF12BuilderController::StaticClass();
     
-    // Use spectator pawn for free camera movement
-    DefaultPawnClass = ASpectatorPawn::StaticClass();
+    // Use our third-person pawn for scale visualization
+    DefaultPawnClass = AF12BuilderPawn::StaticClass();
 }

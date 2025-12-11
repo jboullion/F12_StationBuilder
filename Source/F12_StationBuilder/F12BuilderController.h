@@ -13,6 +13,7 @@
 class AF12InstancedRenderer;
 class UF12ProceduralGenerator;
 class UF12GeneratorWidget;
+class AF12BuilderPawn;
 
 // Builder modes
 UENUM(BlueprintType)
@@ -140,6 +141,12 @@ public:
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|HUD")
     FString GetPerformanceStats() const;
 
+    // === CAMERA HELPERS ===
+
+    // Get the builder pawn (for camera control)
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|Camera")
+    AF12BuilderPawn* GetBuilderPawn() const;
+
 protected:
     // Input handlers
     void OnPrimaryAction();
@@ -154,6 +161,15 @@ protected:
     void OnModifierPressed();
     void OnModifierReleased();
     void OnToggleGenerator();
+    void OnCyclePaint();
+    
+    // Camera rotation handlers
+    void OnCameraRotatePressed();
+    void OnCameraRotateReleased();
+    
+    // Camera rotation state
+    bool bIsRotatingCamera = false;
+    void UpdateCameraRotation();
 
     // State
     bool bModifierHeld = false;  // Shift key for tile-level operations
@@ -215,4 +231,8 @@ protected:
 
     // Remove the module under cursor
     void RemoveModule();
+
+    // Cached builder pawn reference
+    UPROPERTY()
+    AF12BuilderPawn* CachedBuilderPawn;
 };
