@@ -38,6 +38,48 @@ struct FF12ModuleInstanceData
     }
 };
 
+// Key for instance lookup: combines HISM component index with instance index
+USTRUCT()
+struct FF12InstanceKey
+{
+    GENERATED_BODY()
+
+    UPROPERTY()
+    int32 ComponentIndex = 0;
+
+    UPROPERTY()
+    int32 InstanceIndex = 0;
+
+    FF12InstanceKey() {}
+    FF12InstanceKey(int32 InComp, int32 InInst) : ComponentIndex(InComp), InstanceIndex(InInst) {}
+
+    bool operator==(const FF12InstanceKey& Other) const
+    {
+        return ComponentIndex == Other.ComponentIndex && InstanceIndex == Other.InstanceIndex;
+    }
+
+    friend uint32 GetTypeHash(const FF12InstanceKey& Key)
+    {
+        return HashCombine(GetTypeHash(Key.ComponentIndex), GetTypeHash(Key.InstanceIndex));
+    }
+};
+
+// Data mapping an instance back to its source module and tile
+USTRUCT()
+struct FF12InstanceSourceData
+{
+    GENERATED_BODY()
+
+    UPROPERTY()
+    FF12GridCoord GridCoord;
+
+    UPROPERTY()
+    int32 TileIndex = 0;
+
+    FF12InstanceSourceData() {}
+    FF12InstanceSourceData(FF12GridCoord InCoord, int32 InTile) : GridCoord(InCoord), TileIndex(InTile) {}
+};
+
 /**
  * Renders F12 modules using GPU instancing for maximum performance.
  * Each module's 12 tiles are rendered as instances of a static mesh.
@@ -164,6 +206,11 @@ protected:
     // Module data storage
     UPROPERTY()
     TMap<FF12GridCoord, FF12ModuleInstanceData> ModuleData;
+
+    // Instance-to-source mapping: maps (ComponentIndex, InstanceIndex) -> (GridCoord, TileIndex)
+    // This allows us to know exactly which module/tile was hit by a raycast
+    UPROPERTY()
+    TMap<FF12InstanceKey, FF12InstanceSourceData> InstanceToSourceMap;
 
     // Cached face transforms (computed once at BeginPlay)
     TArray<FTransform> FaceTransforms;

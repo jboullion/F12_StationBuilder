@@ -1,5 +1,6 @@
 // F12BuilderGameMode.h
 // Game mode for the F12 Station Builder
+// Now uses third-person pawn for scale visualization
 
 #pragma once
 

@@ -1,5 +1,6 @@
 // F12InstancedRenderer.cpp
 // Implementation of Optimized Instance-Based Rendering
+// FIXED: Hit detection now uses instance tracking instead of nearest-module approximation
 
 #include "F12InstancedRenderer.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
@@ -149,13 +150,6 @@ void AF12InstancedRenderer::ComputeFaceTransforms()
         FQuat Rotation = RotMatrix.ToQuat();
         
         FaceTransforms[FaceIdx] = FTransform(Rotation, Center, FVector::OneVector);
-        
-        UE_LOG(LogTemp, Log, TEXT("Face %d: Center(%s) X(%s) Y(%s) Z(%s)"), 
-            FaceIdx, 
-            *Center.ToString(), 
-            *TileX.ToString(),
-            *TileY.ToString(),
-            *TileZ.ToString());
     }
 }
 
@@ -286,17 +280,6 @@ FTransform AF12InstancedRenderer::GetTileWorldTransform(FF12GridCoord GridCoord,
     
     FTransform Result = FaceLocal * ModuleTransform;
     
-    // Log first few transforms for debugging
-    static int32 LogCount = 0;
-    if (LogCount < 24)
-    {
-        UE_LOG(LogTemp, Log, TEXT("Tile %d Transform: Pos(%s) Rot(%s)"), 
-            TileIndex, 
-            *Result.GetLocation().ToString(),
-            *Result.GetRotation().Rotator().ToString());
-        LogCount++;
-    }
-    
     return Result;
 }
 
@@ -335,7 +318,13 @@ void AF12InstancedRenderer::AddModule(FF12GridCoord GridCoord, int32 MaterialInd
             if (HISM)
             {
                 FTransform TileTransform = GetTileWorldTransform(GridCoord, TileIdx);
-                HISM->AddInstance(TileTransform, true);
+                int32 InstanceIdx = HISM->AddInstance(TileTransform, true);
+                
+                // Track this instance -> source mapping
+                int32 ComponentIdx = TileIdx * NumMaterials + FMath::Clamp(MaterialIndex, 0, NumMaterials - 1);
+                FF12InstanceKey Key(ComponentIdx, InstanceIdx);
+                InstanceToSourceMap.Add(Key, FF12InstanceSourceData(GridCoord, TileIdx));
+                
                 InstancesAdded++;
             }
             else
@@ -381,6 +370,7 @@ void AF12InstancedRenderer::RemoveModule(FF12GridCoord GridCoord)
 void AF12InstancedRenderer::ClearAll()
 {
     ModuleData.Empty();
+    InstanceToSourceMap.Empty();
     
     for (auto* HISM : HISMComponents)
     {
@@ -537,6 +527,7 @@ void AF12InstancedRenderer::ClearAllHighlights()
 }
 
 // === RAYCASTING ===
+// FIXED: Now uses instance tracking instead of nearest-module approximation
 
 bool AF12InstancedRenderer::GetHitModuleAndTile(const FHitResult& Hit, FF12GridCoord& OutGridCoord, int32& OutTileIndex) const
 {
@@ -553,7 +544,28 @@ bool AF12InstancedRenderer::GetHitModuleAndTile(const FHitResult& Hit, FF12GridC
     if (HitComponentIdx == INDEX_NONE)
         return false;
 
-    // Decode face index from component index
+    // Get the instance index from the hit result
+    // Hit.Item contains the instance index for instanced static meshes
+    int32 HitInstanceIdx = Hit.Item;
+    
+    // Look up the source module and tile from our tracking map
+    FF12InstanceKey Key(HitComponentIdx, HitInstanceIdx);
+    const FF12InstanceSourceData* SourceData = InstanceToSourceMap.Find(Key);
+    
+    if (SourceData)
+    {
+        // Found exact match in our tracking map
+        OutGridCoord = SourceData->GridCoord;
+        OutTileIndex = SourceData->TileIndex;
+        return true;
+    }
+    
+    // Fallback: If instance tracking failed (shouldn't happen normally),
+    // use the old nearest-module approach
+    UE_LOG(LogTemp, Warning, TEXT("GetHitModuleAndTile: Instance not found in tracking map (Comp=%d, Inst=%d), using fallback"), 
+        HitComponentIdx, HitInstanceIdx);
+    
+    // Decode face index from component index as fallback
     OutTileIndex = HitComponentIdx / NumMaterials;
     
     // Get world position of hit and convert to grid coordinate
@@ -597,7 +609,7 @@ void AF12InstancedRenderer::RebuildInstances()
         return;
     }
     
-    // Clear all instances first (batch)
+    // Clear all instances and tracking map
     for (auto* HISM : HISMComponents)
     {
         if (HISM && HISM->IsRegistered())
@@ -605,6 +617,9 @@ void AF12InstancedRenderer::RebuildInstances()
             HISM->ClearInstances();
         }
     }
+    
+    // Clear the instance tracking map - will be rebuilt
+    InstanceToSourceMap.Empty();
 
     // Rebuild from module data (batch add without immediate updates)
     for (const auto& Pair : ModuleData)
@@ -617,12 +632,18 @@ void AF12InstancedRenderer::RebuildInstances()
             if (Data.TileVisibility[TileIdx])
             {
                 int32 MatIdx = Data.TileMaterials[TileIdx];
+                int32 ComponentIdx = TileIdx * NumMaterials + FMath::Clamp(MatIdx, 0, NumMaterials - 1);
+                
                 UHierarchicalInstancedStaticMeshComponent* HISM = GetHISMForFaceAndMaterial(TileIdx, MatIdx);
                 
                 if (HISM && HISM->IsRegistered())
                 {
                     FTransform TileTransform = GetTileWorldTransform(Coord, TileIdx);
-                    HISM->AddInstance(TileTransform, false);  // Don't update immediately
+                    int32 InstanceIdx = HISM->AddInstance(TileTransform, false);  // Don't update immediately
+                    
+                    // Track this instance -> source mapping
+                    FF12InstanceKey Key(ComponentIdx, InstanceIdx);
+                    InstanceToSourceMap.Add(Key, FF12InstanceSourceData(Coord, TileIdx));
                 }
             }
         }
@@ -636,6 +657,9 @@ void AF12InstancedRenderer::RebuildInstances()
             HISM->MarkRenderStateDirty();
         }
     }
+    
+    UE_LOG(LogTemp, Log, TEXT("RebuildInstances: %d modules, %d instances tracked"), 
+        ModuleData.Num(), InstanceToSourceMap.Num());
 }
 
 // === STATISTICS ===
