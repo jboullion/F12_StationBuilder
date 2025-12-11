@@ -31,6 +31,11 @@ struct FF12GridCoord
         return X == Other.X && Y == Other.Y && Z == Other.Z;
     }
 
+    bool operator!=(const FF12GridCoord& Other) const
+    {
+        return !(*this == Other);
+    }
+
     friend uint32 GetTypeHash(const FF12GridCoord& Coord)
     {
         return HashCombine(HashCombine(GetTypeHash(Coord.X), GetTypeHash(Coord.Y)), GetTypeHash(Coord.Z));
@@ -47,7 +52,11 @@ public:
 
     // Size of each module (should match F12Module::ModuleSize)
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid")
-    float ModuleSize = 400.0f;
+    float ModuleSize = 600.0f;
+
+    // Thickness of each tile (should match Blender mesh)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid")
+    float TileThickness = 50.0f;
 
     // Convert world position to nearest grid coordinate
     UFUNCTION(BlueprintCallable, Category = "Grid")
@@ -86,16 +95,32 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Grid")
     FF12GridCoord GetNeighborCoordForFace(FF12GridCoord ModuleCoord, int32 FaceIndex);
 
+    // The 12 neighbor offset directions in grid space (public for drag build)
+    // These correspond to the 12 faces of the rhombic dodecahedron
+    UFUNCTION(BlueprintCallable, Category = "Grid")
+    TArray<FIntVector> GetNeighborOffsets();
+    
+    // Face normals for determining which face was hit (public for visualization)
+    UFUNCTION(BlueprintCallable, Category = "Grid")
+    TArray<FVector> GetFaceNormals();
+
+    // Get a single face normal by index
+    UFUNCTION(BlueprintCallable, Category = "Grid")
+    FVector GetFaceNormal(int32 FaceIndex);
+
+    // Get the grid offset direction for a face (for drag build)
+    UFUNCTION(BlueprintCallable, Category = "Grid")
+    FIntVector GetGridOffsetForFace(int32 FaceIndex);
+
+    // Get the spacing between module centers
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Grid")
+    float GetModuleSpacing() const;
+
+    // Get all occupied cells (for iteration)
+    const TMap<FF12GridCoord, AActor*>& GetOccupiedCells() const { return OccupiedPositions; }
+
 protected:
     // Map of occupied positions to module actors
     UPROPERTY()
     TMap<FF12GridCoord, AActor*> OccupiedPositions;
-
-private:
-    // The 12 neighbor offset directions in grid space
-    // These correspond to the 12 faces of the rhombic dodecahedron
-    TArray<FIntVector> GetNeighborOffsets();
-    
-    // Face normals for determining which face was hit
-    TArray<FVector> GetFaceNormals();
 };

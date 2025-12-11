@@ -25,7 +25,11 @@ public class F12_StationBuilder : ModuleRules
             
 			// Rendering for post-process and materials
 			"RenderCore",
-			"RHI"
+			"RHI",
+			
+			// Mesh generation and conversion (for instanced renderer)
+			"MeshDescription",
+			"StaticMeshDescription"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });

@@ -68,20 +68,21 @@ TArray<FVector> AF12GridSystem::GetFaceNormals()
 FF12GridCoord AF12GridSystem::WorldToGrid(FVector WorldPosition)
 {
     // Convert world position to grid coordinates
-    // The grid spacing depends on module size and geometry
+    // The grid spacing must account for tile thickness to prevent overlap
+    // 
+    // Geometry:
+    // - Face center is at distance R = ModuleSize/2 from module center
+    // - Tiles have thickness T, extending T/2 outward
+    // - For tiles to just touch (not overlap): center-to-center = 2*(R + T/2)
+    // - Base spacing factor is sqrt(2)/2 ≈ 0.707 for BCC lattice
+    // - Adjusted factor = 0.707 * (ModuleSize + TileThickness) / ModuleSize
     
-    // For rhombic dodecahedra, the center-to-center distance between
-    // adjacent modules depends on which faces are touching:
-    // - Corner-face neighbors: distance = ModuleSize * sqrt(3)/2
-    // - Axial-face neighbors: distance = ModuleSize
-    
-    // Simplified: use a uniform grid where spacing = ModuleSize * 0.7
-    float GridSpacing = ModuleSize * 0.707f;
+    float AdjustedSpacing = ModuleSize * 0.707f * (ModuleSize + TileThickness) / ModuleSize;
     
     FF12GridCoord Coord;
-    Coord.X = FMath::RoundToInt(WorldPosition.X / GridSpacing);
-    Coord.Y = FMath::RoundToInt(WorldPosition.Y / GridSpacing);
-    Coord.Z = FMath::RoundToInt(WorldPosition.Z / GridSpacing);
+    Coord.X = FMath::RoundToInt(WorldPosition.X / AdjustedSpacing);
+    Coord.Y = FMath::RoundToInt(WorldPosition.Y / AdjustedSpacing);
+    Coord.Z = FMath::RoundToInt(WorldPosition.Z / AdjustedSpacing);
     
     return Coord;
 }
@@ -89,12 +90,13 @@ FF12GridCoord AF12GridSystem::WorldToGrid(FVector WorldPosition)
 FVector AF12GridSystem::GridToWorld(FF12GridCoord GridCoord)
 {
     // Convert grid coordinates to world position
-    float GridSpacing = ModuleSize * 0.707f;
+    // Use adjusted spacing to prevent tile overlap
+    float AdjustedSpacing = ModuleSize * 0.707f * (ModuleSize + TileThickness) / ModuleSize;
     
     return FVector(
-        GridCoord.X * GridSpacing,
-        GridCoord.Y * GridSpacing,
-        GridCoord.Z * GridSpacing
+        GridCoord.X * AdjustedSpacing,
+        GridCoord.Y * AdjustedSpacing,
+        GridCoord.Z * AdjustedSpacing
     );
 }
 
@@ -176,4 +178,38 @@ FF12GridCoord AF12GridSystem::GetNeighborCoordForFace(FF12GridCoord ModuleCoord,
     }
     
     return ModuleCoord;
+}
+
+FVector AF12GridSystem::GetFaceNormal(int32 FaceIndex)
+{
+    TArray<FVector> Normals = GetFaceNormals();
+    
+    if (FaceIndex >= 0 && FaceIndex < 12)
+    {
+        return Normals[FaceIndex];
+    }
+    
+    return FVector::UpVector;
+}
+
+FIntVector AF12GridSystem::GetGridOffsetForFace(int32 FaceIndex)
+{
+    TArray<FIntVector> Offsets = GetNeighborOffsets();
+    
+    if (FaceIndex >= 0 && FaceIndex < 12)
+    {
+        return Offsets[FaceIndex];
+    }
+    
+    return FIntVector(0, 0, 1);  // Default to up
+}
+
+float AF12GridSystem::GetModuleSpacing() const
+{
+    // Distance between adjacent module centers
+    // Must account for tile thickness to match GridToWorld
+    float AdjustedSpacing = ModuleSize * 0.707f * (ModuleSize + TileThickness) / ModuleSize;
+    
+    // For BCC lattice, diagonal offsets like (1,0,-1) have magnitude sqrt(2)
+    return AdjustedSpacing * FMath::Sqrt(2.0f);
 }
