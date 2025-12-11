@@ -1,12 +1,12 @@
 // F12BuilderController.cpp
-// Implementation of the builder player controller with Mode System
-// Includes: Undo/Redo, Drag Build Mode, Procedural Generation
+// Implementation of the builder player controller
+// Uses instanced rendering exclusively
 
 #include "F12BuilderController.h"
-#include "F12Module.h"
+#include "F12InstancedRenderer.h"
 #include "F12ProceduralGenerator.h"
 #include "F12GeneratorWidget.h"
-#include "ProceduralMeshComponent/Public/ProceduralMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
 
@@ -22,59 +22,39 @@ void AF12BuilderController::BeginPlay()
 {
     Super::BeginPlay();
 
-    // Create action history
-    ActionHistory = NewObject<UF12ActionHistory>(this, TEXT("ActionHistory"));
-
     // Create procedural generator
     ProceduralGenerator = NewObject<UF12ProceduralGenerator>(this, TEXT("ProceduralGenerator"));
 
-    // Find or create the grid system
+    // Find the grid system
     GridSystem = Cast<AF12GridSystem>(UGameplayStatics::GetActorOfClass(GetWorld(), AF12GridSystem::StaticClass()));
     
     if (!GridSystem)
     {
         FActorSpawnParameters SpawnParams;
         GridSystem = GetWorld()->SpawnActor<AF12GridSystem>(AF12GridSystem::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+        UE_LOG(LogTemp, Log, TEXT("Created GridSystem"));
     }
 
-    // Create ghost preview module
-    if (ModuleClass)
+    // Find the instanced renderer
+    if (!InstancedRenderer)
     {
-        FActorSpawnParameters SpawnParams;
-        SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-        
-        GhostModule = GetWorld()->SpawnActor<AF12Module>(ModuleClass, FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
-        
-        if (GhostModule)
-        {
-            GhostModule->SetActorEnableCollision(false);
-            // Make ghost slightly transparent - would need a ghost material
-        }
+        InstancedRenderer = Cast<AF12InstancedRenderer>(
+            UGameplayStatics::GetActorOfClass(GetWorld(), AF12InstancedRenderer::StaticClass())
+        );
     }
 
-    // Spawn the initial "core" module at origin
-    if (ModuleClass && GridSystem)
+    if (!InstancedRenderer)
     {
+        UE_LOG(LogTemp, Error, TEXT("No F12InstancedRenderer found in level! Add one and assign the static mesh."));
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log, TEXT("Found InstancedRenderer"));
+        
+        // Spawn the initial "core" module at origin
         FF12GridCoord CoreCoord(0, 0, 0);
-        FVector CorePos = GridSystem->GridToWorld(CoreCoord);
-        
-        FActorSpawnParameters SpawnParams;
-        AF12Module* CoreModule = GetWorld()->SpawnActor<AF12Module>(ModuleClass, CorePos, FRotator::ZeroRotator, SpawnParams);
-        
-        if (CoreModule)
-        {
-            if (DefaultModuleMaterial)
-            {
-                CoreModule->TileMaterial = DefaultModuleMaterial;
-            }
-            
-            // Copy paint materials to module
-            CoreModule->TileMaterials = PaintMaterials;
-            CoreModule->GenerateModule();
-        }
-        
-        GridSystem->SetOccupied(CoreCoord, CoreModule);
-        
+        InstancedRenderer->AddModule(CoreCoord, 0);
+        GridSystem->SetOccupied(CoreCoord, nullptr);
         UE_LOG(LogTemp, Log, TEXT("Spawned core module at origin"));
     }
 
@@ -88,7 +68,7 @@ void AF12BuilderController::BeginPlay()
         if (HUDWidget)
         {
             HUDWidget->AddToViewport();
-            UE_LOG(LogTemp, Log, TEXT("HUD Widget created and added to viewport"));
+            UE_LOG(LogTemp, Log, TEXT("HUD Widget created"));
         }
     }
 
@@ -104,89 +84,129 @@ void AF12BuilderController::BeginPlay()
         GeneratorWidget = CreateWidget<UF12GeneratorWidget>(this, GeneratorWidgetClass);
         if (GeneratorWidget)
         {
-            GeneratorWidget->AddToViewport(10);  // Higher Z-order to be on top
+            GeneratorWidget->AddToViewport(10);
             UE_LOG(LogTemp, Log, TEXT("Generator Widget created"));
         }
     }
+
+    // Create ghost preview mesh components
+    InitializeGhostPreview();
 }
 
 void AF12BuilderController::SetupInputComponent()
 {
     Super::SetupInputComponent();
 
-    // Primary/Secondary actions
     InputComponent->BindAction("PrimaryAction", IE_Pressed, this, &AF12BuilderController::OnPrimaryAction);
     InputComponent->BindAction("PrimaryAction", IE_Released, this, &AF12BuilderController::OnPrimaryActionReleased);
     InputComponent->BindAction("SecondaryAction", IE_Pressed, this, &AF12BuilderController::OnSecondaryAction);
     
-    // Mode switching
     InputComponent->BindAction("CycleMode", IE_Pressed, this, &AF12BuilderController::OnCycleMode);
     InputComponent->BindAction("BuildMode", IE_Pressed, this, &AF12BuilderController::OnSetBuildMode);
     InputComponent->BindAction("PaintMode", IE_Pressed, this, &AF12BuilderController::OnSetPaintMode);
     InputComponent->BindAction("DeleteMode", IE_Pressed, this, &AF12BuilderController::OnSetDeleteMode);
     
-    // Scroll wheel for material selection
     InputComponent->BindAction("ScrollUp", IE_Pressed, this, &AF12BuilderController::OnScrollUp);
     InputComponent->BindAction("ScrollDown", IE_Pressed, this, &AF12BuilderController::OnScrollDown);
     
-    // Modifier key (Shift) for tile-level operations and drag build
     InputComponent->BindAction("Modifier", IE_Pressed, this, &AF12BuilderController::OnModifierPressed);
     InputComponent->BindAction("Modifier", IE_Released, this, &AF12BuilderController::OnModifierReleased);
 
-    // Undo/Redo
-    InputComponent->BindAction("Undo", IE_Pressed, this, &AF12BuilderController::OnUndo);
-    InputComponent->BindAction("Redo", IE_Pressed, this, &AF12BuilderController::OnRedo);
-
-    // Generator panel toggle
     InputComponent->BindAction("ToggleGenerator", IE_Pressed, this, &AF12BuilderController::OnToggleGenerator);
 }
 
 void AF12BuilderController::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
+    UpdatePreview();
     
-    // Update drag build if active
-    if (bIsDragBuilding)
+    // Update drag preview in build mode
+    if (CurrentMode == EF12BuilderMode::Build)
     {
-        UpdateDragBuild();
+        if (bIsDragging)
+        {
+            UpdateDragPreview();
+        }
+        else
+        {
+            UpdateGhostPreview();
+        }
     }
     else
     {
-        UpdateGhostPreview();
+        HideAllGhosts();
+        bIsDragging = false;
     }
     
-    UpdateDeleteHighlight();
+    // Handle drag painting in paint mode
+    if (bIsPainting && CurrentMode == EF12BuilderMode::Paint && InstancedRenderer)
+    {
+        FHitResult Hit;
+        if (TraceFromCamera(Hit))
+        {
+            FF12GridCoord HitGridCoord;
+            int32 TileIndex;
+            
+            if (InstancedRenderer->GetHitModuleAndTile(Hit, HitGridCoord, TileIndex))
+            {
+                bool bShouldPaint = false;
+                
+                if (bModifierHeld)
+                {
+                    // Single tile mode - check if different tile
+                    if (!(HitGridCoord == LastPaintedCoord && TileIndex == LastPaintedTile))
+                    {
+                        bShouldPaint = true;
+                    }
+                }
+                else
+                {
+                    // Module mode - check if different module
+                    if (!(HitGridCoord == LastPaintedCoord))
+                    {
+                        bShouldPaint = true;
+                    }
+                }
+                
+                if (bShouldPaint)
+                {
+                    if (bModifierHeld)
+                    {
+                        InstancedRenderer->SetTileMaterial(HitGridCoord, TileIndex, CurrentPaintMaterialIndex);
+                    }
+                    else
+                    {
+                        InstancedRenderer->SetModuleMaterial(HitGridCoord, CurrentPaintMaterialIndex);
+                    }
+                    LastPaintedCoord = HitGridCoord;
+                    LastPaintedTile = TileIndex;
+                }
+            }
+        }
+    }
+    
+    // Update delete highlight
+    if (CurrentMode == EF12BuilderMode::Delete)
+    {
+        UpdateDeleteHighlight();
+    }
+    else if (InstancedRenderer)
+    {
+        // Clear highlights when not in delete mode
+        if (bHasHighlight)
+        {
+            InstancedRenderer->ClearAllHighlights();
+            bHasHighlight = false;
+        }
+    }
 }
 
-// === MODE SWITCHING ===
+// === MODE SYSTEM ===
 
 void AF12BuilderController::SetMode(EF12BuilderMode NewMode)
 {
-    // Cancel any drag build in progress
-    if (bIsDragBuilding)
-    {
-        CancelDragBuild();
-    }
-
-    // Clear any existing highlight when changing modes
-    ClearHighlight();
-    
     CurrentMode = NewMode;
-    
-    // Update ghost visibility based on mode
-    if (GhostModule)
-    {
-        GhostModule->SetActorHiddenInGame(CurrentMode != EF12BuilderMode::Build);
-    }
-    
-    FString ModeName;
-    switch (CurrentMode)
-    {
-        case EF12BuilderMode::Build:  ModeName = "BUILD"; break;
-        case EF12BuilderMode::Paint:  ModeName = "PAINT"; break;
-        case EF12BuilderMode::Delete: ModeName = "DELETE"; break;
-    }
-    UE_LOG(LogTemp, Log, TEXT("Mode changed to: %s"), *ModeName);
+    UE_LOG(LogTemp, Log, TEXT("Mode changed to: %s"), *GetModeName());
 }
 
 void AF12BuilderController::CycleMode()
@@ -199,59 +219,112 @@ void AF12BuilderController::CycleMode()
     }
 }
 
-void AF12BuilderController::SetBuildMode()  { SetMode(EF12BuilderMode::Build); }
-void AF12BuilderController::SetPaintMode()  { SetMode(EF12BuilderMode::Paint); }
+void AF12BuilderController::SetBuildMode() { SetMode(EF12BuilderMode::Build); }
+void AF12BuilderController::SetPaintMode() { SetMode(EF12BuilderMode::Paint); }
 void AF12BuilderController::SetDeleteMode() { SetMode(EF12BuilderMode::Delete); }
 
 // === INPUT HANDLERS ===
 
-void AF12BuilderController::OnPrimaryAction()   { PrimaryAction(); }
-void AF12BuilderController::OnPrimaryActionReleased() { HandleBuildPrimaryRelease(); }
-void AF12BuilderController::OnSecondaryAction() { SecondaryAction(); }
-void AF12BuilderController::OnCycleMode()       { CycleMode(); }
-void AF12BuilderController::OnSetBuildMode()    { SetBuildMode(); }
-void AF12BuilderController::OnSetPaintMode()    { SetPaintMode(); }
-void AF12BuilderController::OnSetDeleteMode()   { SetDeleteMode(); }
-
-void AF12BuilderController::OnModifierPressed()  
+void AF12BuilderController::OnPrimaryAction() 
 { 
-    bModifierHeld = true; 
-}
-
-void AF12BuilderController::OnModifierReleased() 
-{ 
-    bModifierHeld = false;
-    
-    // If we were drag building, complete it
-    if (bIsDragBuilding)
+    if (CurrentMode == EF12BuilderMode::Build)
     {
-        CancelDragBuild();
+        // Only start drag if shift is held
+        if (bModifierHeld)
+        {
+            FHitResult Hit;
+            if (TraceFromCamera(Hit) && InstancedRenderer && GridSystem)
+            {
+                FF12GridCoord HitGridCoord;
+                int32 TileIndex;
+                
+                if (InstancedRenderer->GetHitModuleAndTile(Hit, HitGridCoord, TileIndex))
+                {
+                    // Get the neighbor coord and direction for this face
+                    DragStartCoord = GridSystem->GetNeighborCoordForFace(HitGridCoord, TileIndex);
+                    DragFaceIndex = TileIndex;
+                    
+                    // Get the face normal direction from the grid system
+                    DragDirection = GridSystem->GetFaceNormal(TileIndex);
+                    
+                    // Store the world position where we started dragging
+                    DragStartWorldPos = Hit.ImpactPoint;
+                    
+                    // Only start drag if the start position is valid
+                    if (!GridSystem->IsOccupied(DragStartCoord))
+                    {
+                        bIsDragging = true;
+                        DragPreviewCoords.Empty();
+                        DragPreviewCoords.Add(DragStartCoord);
+                        UE_LOG(LogTemp, Log, TEXT("Started drag from face %d, direction: %s"), TileIndex, *DragDirection.ToString());
+                    }
+                }
+            }
+        }
+        else
+        {
+            // No shift held - just place a single module
+            if (bValidPlacement)
+            {
+                PlaceModule();
+            }
+        }
+    }
+    else if (CurrentMode == EF12BuilderMode::Paint)
+    {
+        // Start drag painting
+        bIsPainting = true;
+        LastPaintedCoord = FF12GridCoord(INT_MAX, INT_MAX, INT_MAX);
+        LastPaintedTile = -1;
+        PrimaryAction();  // Paint the first one
+    }
+    else
+    {
+        PrimaryAction(); 
     }
 }
 
+void AF12BuilderController::OnPrimaryActionReleased()
+{
+    if (bIsDragging && CurrentMode == EF12BuilderMode::Build)
+    {
+        // Place all modules in the drag preview
+        PlaceDraggedModules();
+    }
+    bIsDragging = false;
+    bIsPainting = false;
+    DragPreviewCoords.Empty();
+    HideAllGhosts();
+}
+void AF12BuilderController::OnSecondaryAction() { SecondaryAction(); }
+void AF12BuilderController::OnCycleMode() { CycleMode(); }
+void AF12BuilderController::OnSetBuildMode() { SetBuildMode(); }
+void AF12BuilderController::OnSetPaintMode() { SetPaintMode(); }
+void AF12BuilderController::OnSetDeleteMode() { SetDeleteMode(); }
+
 void AF12BuilderController::OnScrollUp()
 {
-    if (CurrentMode == EF12BuilderMode::Paint && PaintMaterials.Num() > 0)
+    if (CurrentMode == EF12BuilderMode::Paint && PaintColors.Num() > 0)
     {
-        CurrentPaintMaterialIndex = (CurrentPaintMaterialIndex + 1) % PaintMaterials.Num();
+        CurrentPaintMaterialIndex = (CurrentPaintMaterialIndex + 1) % PaintColors.Num();
         UE_LOG(LogTemp, Log, TEXT("Paint material: %d"), CurrentPaintMaterialIndex);
     }
 }
 
 void AF12BuilderController::OnScrollDown()
 {
-    if (CurrentMode == EF12BuilderMode::Paint && PaintMaterials.Num() > 0)
+    if (CurrentMode == EF12BuilderMode::Paint && PaintColors.Num() > 0)
     {
-        CurrentPaintMaterialIndex = (CurrentPaintMaterialIndex - 1 + PaintMaterials.Num()) % PaintMaterials.Num();
+        CurrentPaintMaterialIndex = (CurrentPaintMaterialIndex - 1 + PaintColors.Num()) % PaintColors.Num();
         UE_LOG(LogTemp, Log, TEXT("Paint material: %d"), CurrentPaintMaterialIndex);
     }
 }
 
-void AF12BuilderController::OnUndo() { Undo(); }
-void AF12BuilderController::OnRedo() { Redo(); }
+void AF12BuilderController::OnModifierPressed() { bModifierHeld = true; }
+void AF12BuilderController::OnModifierReleased() { bModifierHeld = false; }
 void AF12BuilderController::OnToggleGenerator() { ToggleGeneratorPanel(); }
 
-// === MAIN ACTIONS ===
+// === ACTIONS ===
 
 void AF12BuilderController::PrimaryAction()
 {
@@ -273,142 +346,94 @@ void AF12BuilderController::SecondaryAction()
     }
 }
 
+void AF12BuilderController::CyclePaintMaterial()
+{
+    if (PaintColors.Num() > 0)
+    {
+        CurrentPaintMaterialIndex = (CurrentPaintMaterialIndex + 1) % PaintColors.Num();
+    }
+}
+
 // === MODE-SPECIFIC HANDLERS ===
 
 void AF12BuilderController::HandleBuildPrimary()
 {
-    // Check if we should start drag building (shift held)
-    if (bModifierHeld && CurrentMode == EF12BuilderMode::Build)
-    {
-        // Get hit info to determine face and start drag
-        FHitResult Hit;
-        if (TraceFromCamera(Hit))
-        {
-            AF12Module* HitModule = Cast<AF12Module>(Hit.GetActor());
-            if (HitModule)
-            {
-                FF12GridCoord HitCoord = GridSystem->WorldToGrid(HitModule->GetActorLocation());
-                int32 FaceIndex = GridSystem->GetHitFaceIndex(HitCoord, Hit.Location);
-                FF12GridCoord NeighborCoord = GridSystem->GetNeighborCoordForFace(HitCoord, FaceIndex);
-                
-                if (!GridSystem->IsOccupied(NeighborCoord))
-                {
-                    StartDragBuild(NeighborCoord, FaceIndex);
-                    return;
-                }
-            }
-        }
-    }
-    
-    // Regular single module placement
     PlaceModule();
-}
-
-void AF12BuilderController::HandleBuildPrimaryRelease()
-{
-    // Complete drag build if active
-    if (bIsDragBuilding)
-    {
-        CompleteDragBuild();
-    }
 }
 
 void AF12BuilderController::HandleBuildSecondary()
 {
-    // Cancel drag build if active
-    if (bIsDragBuilding)
-    {
-        CancelDragBuild();
-        return;
-    }
-    
-    // Remove module
-    RemoveModule();
+    // Right-click in build mode does nothing
+    // Use Delete mode (key 3) to remove modules
 }
 
 void AF12BuilderController::HandlePaintPrimary()
 {
-    int32 TileIndex = -1;
-    AF12Module* Module = GetModuleUnderCursor(TileIndex);
-    
-    if (Module && PaintMaterials.Num() > 0)
+    if (!InstancedRenderer)
+        return;
+
+    FHitResult Hit;
+    if (TraceFromCamera(Hit))
     {
-        if (bModifierHeld && TileIndex >= 0)
+        FF12GridCoord GridCoord;
+        int32 TileIndex;
+        
+        if (InstancedRenderer->GetHitModuleAndTile(Hit, GridCoord, TileIndex))
         {
-            // Paint single tile - record for undo
-            int32 OldIndex = Module->TileMaterialIndices.IsValidIndex(TileIndex) ? Module->TileMaterialIndices[TileIndex] : 0;
-            
-            FF12BuilderAction Action = FF12BuilderAction::CreatePaintTile(Module, TileIndex, OldIndex, CurrentPaintMaterialIndex);
-            ActionHistory->AddAction(Action);
-            
-            Module->SetTileMaterialIndex(TileIndex, CurrentPaintMaterialIndex);
-            UE_LOG(LogTemp, Log, TEXT("Painted tile %d with material %d"), TileIndex, CurrentPaintMaterialIndex);
-        }
-        else
-        {
-            // Paint entire module - record for undo
-            TArray<int32> OldIndices = Module->TileMaterialIndices;
-            
-            FF12BuilderAction Action = FF12BuilderAction::CreatePaintModule(Module, OldIndices, CurrentPaintMaterialIndex);
-            ActionHistory->AddAction(Action);
-            
-            for (int32 i = 0; i < 12; i++)
+            if (bModifierHeld)
             {
-                Module->SetTileMaterialIndex(i, CurrentPaintMaterialIndex);
+                // Paint single tile
+                InstancedRenderer->SetTileMaterial(GridCoord, TileIndex, CurrentPaintMaterialIndex);
+                UE_LOG(LogTemp, Log, TEXT("Painted tile %d with material %d"), TileIndex, CurrentPaintMaterialIndex);
             }
-            UE_LOG(LogTemp, Log, TEXT("Painted entire module with material %d"), CurrentPaintMaterialIndex);
+            else
+            {
+                // Paint whole module
+                InstancedRenderer->SetModuleMaterial(GridCoord, CurrentPaintMaterialIndex);
+                UE_LOG(LogTemp, Log, TEXT("Painted module with material %d"), CurrentPaintMaterialIndex);
+            }
         }
     }
 }
 
 void AF12BuilderController::HandlePaintSecondary()
 {
-    // Cycle paint material
-    if (PaintMaterials.Num() > 0)
-    {
-        CurrentPaintMaterialIndex = (CurrentPaintMaterialIndex + 1) % PaintMaterials.Num();
-        UE_LOG(LogTemp, Log, TEXT("Cycled to paint material: %d"), CurrentPaintMaterialIndex);
-    }
+    CyclePaintMaterial();
 }
 
 void AF12BuilderController::HandleDeletePrimary()
 {
-    int32 TileIndex = -1;
-    AF12Module* Module = GetModuleUnderCursor(TileIndex);
-    
-    if (Module)
+    if (!InstancedRenderer || !GridSystem)
+        return;
+
+    FHitResult Hit;
+    if (TraceFromCamera(Hit))
     {
-        if (bModifierHeld && TileIndex >= 0)
+        FF12GridCoord GridCoord;
+        int32 TileIndex;
+        
+        if (InstancedRenderer->GetHitModuleAndTile(Hit, GridCoord, TileIndex))
         {
-            // Delete single tile (hide it) - record for undo
-            if (Module->IsTileVisible(TileIndex))
+            if (bModifierHeld)
             {
-                FF12BuilderAction Action = FF12BuilderAction::CreateDeleteTile(Module, TileIndex);
-                ActionHistory->AddAction(Action);
+                // Delete single tile (hide it)
+                InstancedRenderer->SetTileVisible(GridCoord, TileIndex, false);
+                UE_LOG(LogTemp, Log, TEXT("Hid tile %d"), TileIndex);
+            }
+            else
+            {
+                // Can't delete core
+                if (GridCoord.X == 0 && GridCoord.Y == 0 && GridCoord.Z == 0)
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("Cannot delete core module"));
+                    return;
+                }
                 
-                Module->SetTileVisible(TileIndex, false);
-                UE_LOG(LogTemp, Log, TEXT("Deleted tile %d"), TileIndex);
+                // Delete whole module
+                InstancedRenderer->RemoveModule(GridCoord);
+                GridSystem->ClearOccupied(GridCoord);
+                UE_LOG(LogTemp, Log, TEXT("Deleted module at (%d, %d, %d)"), GridCoord.X, GridCoord.Y, GridCoord.Z);
             }
-        }
-        else
-        {
-            // Delete entire module
-            FF12GridCoord Coord = GridSystem->WorldToGrid(Module->GetActorLocation());
-            
-            // Don't delete core module
-            if (Coord.X == 0 && Coord.Y == 0 && Coord.Z == 0)
-            {
-                UE_LOG(LogTemp, Warning, TEXT("Cannot delete core module"));
-                return;
-            }
-            
-            // Record for undo
-            FF12BuilderAction Action = FF12BuilderAction::CreateRemoveModule(Coord, Module);
-            ActionHistory->AddAction(Action);
-            
-            GridSystem->ClearOccupied(Coord);
-            Module->Destroy();
-            UE_LOG(LogTemp, Log, TEXT("Deleted module"));
         }
     }
 }
@@ -416,18 +441,22 @@ void AF12BuilderController::HandleDeletePrimary()
 void AF12BuilderController::HandleDeleteSecondary()
 {
     // Restore hidden tile
-    int32 TileIndex = -1;
-    AF12Module* Module = GetModuleUnderCursor(TileIndex);
-    
-    if (Module && TileIndex >= 0)
+    if (!InstancedRenderer)
+        return;
+
+    FHitResult Hit;
+    if (TraceFromCamera(Hit))
     {
-        if (!Module->IsTileVisible(TileIndex))
+        FF12GridCoord GridCoord;
+        int32 TileIndex;
+        
+        if (InstancedRenderer->GetHitModuleAndTile(Hit, GridCoord, TileIndex))
         {
-            FF12BuilderAction Action = FF12BuilderAction::CreateRestoreTile(Module, TileIndex);
-            ActionHistory->AddAction(Action);
-            
-            Module->SetTileVisible(TileIndex, true);
-            UE_LOG(LogTemp, Log, TEXT("Restored tile %d"), TileIndex);
+            if (!InstancedRenderer->GetTileVisible(GridCoord, TileIndex))
+            {
+                InstancedRenderer->SetTileVisible(GridCoord, TileIndex, true);
+                UE_LOG(LogTemp, Log, TEXT("Restored tile %d"), TileIndex);
+            }
         }
     }
 }
@@ -444,16 +473,6 @@ bool AF12BuilderController::TraceFromCamera(FHitResult& OutHit)
         FVector TraceEnd = WorldLocation + (WorldDirection * TraceDistance);
         
         FCollisionQueryParams QueryParams;
-        QueryParams.AddIgnoredActor(GhostModule);
-        
-        // Ignore drag ghost modules
-        for (AF12Module* Ghost : DragGhostModules)
-        {
-            if (Ghost)
-            {
-                QueryParams.AddIgnoredActor(Ghost);
-            }
-        }
         
         return GetWorld()->LineTraceSingleByChannel(OutHit, TraceStart, TraceEnd, ECC_Visibility, QueryParams);
     }
@@ -461,33 +480,18 @@ bool AF12BuilderController::TraceFromCamera(FHitResult& OutHit)
     return false;
 }
 
-AF12Module* AF12BuilderController::GetModuleUnderCursor(int32& OutTileIndex)
+void AF12BuilderController::UpdatePreview()
 {
-    OutTileIndex = -1;
-    
-    FHitResult Hit;
-    if (TraceFromCamera(Hit))
+    if (!GridSystem || !InstancedRenderer)
     {
-        AF12Module* Module = Cast<AF12Module>(Hit.GetActor());
-        if (Module)
-        {
-            OutTileIndex = Module->GetTileIndexFromComponent(Hit.GetComponent());
-            return Module;
-        }
-    }
-    
-    return nullptr;
-}
-
-void AF12BuilderController::UpdateGhostPreview()
-{
-    if (!GhostModule || !GridSystem)
+        bValidPlacement = false;
         return;
+    }
 
-    // Only show ghost in Build mode when not drag building
-    if (CurrentMode != EF12BuilderMode::Build || bIsDragBuilding)
+    // Only update placement preview in Build mode
+    if (CurrentMode != EF12BuilderMode::Build)
     {
-        GhostModule->SetActorHiddenInGame(true);
+        bValidPlacement = false;
         return;
     }
 
@@ -495,670 +499,370 @@ void AF12BuilderController::UpdateGhostPreview()
     
     if (TraceFromCamera(Hit))
     {
-        AF12Module* HitModule = Cast<AF12Module>(Hit.GetActor());
+        FF12GridCoord HitGridCoord;
+        int32 TileIndex;
         
-        if (HitModule)
+        // Check if we hit an existing module
+        if (InstancedRenderer->GetHitModuleAndTile(Hit, HitGridCoord, TileIndex))
         {
-            FF12GridCoord HitCoord = GridSystem->WorldToGrid(HitModule->GetActorLocation());
-            int32 FaceIndex = GridSystem->GetHitFaceIndex(HitCoord, Hit.Location);
-            CurrentGridCoord = GridSystem->GetNeighborCoordForFace(HitCoord, FaceIndex);
+            // Get the neighbor coord for the hit face
+            CurrentGridCoord = GridSystem->GetNeighborCoordForFace(HitGridCoord, TileIndex);
         }
         else
         {
+            // Hit something else, use grid position
             CurrentGridCoord = GridSystem->WorldToGrid(Hit.Location);
         }
         
         bValidPlacement = !GridSystem->IsOccupied(CurrentGridCoord);
-        
-        FVector GhostPos = GridSystem->GridToWorld(CurrentGridCoord);
-        GhostModule->SetActorLocation(GhostPos);
-        GhostModule->SetActorHiddenInGame(false);
     }
     else
     {
-        GhostModule->SetActorHiddenInGame(true);
         bValidPlacement = false;
     }
 }
 
-void AF12BuilderController::PlaceModule()
+void AF12BuilderController::UpdateDeleteHighlight()
 {
-    if (!bValidPlacement || !ModuleClass || !GridSystem)
+    if (!InstancedRenderer)
         return;
 
-    AF12Module* NewModule = SpawnModuleAtCoord(CurrentGridCoord);
+    FHitResult Hit;
     
-    if (NewModule)
+    if (TraceFromCamera(Hit))
     {
-        // Record for undo
-        FF12BuilderAction Action = FF12BuilderAction::CreatePlaceModule(CurrentGridCoord, NewModule);
-        ActionHistory->AddAction(Action);
+        FF12GridCoord HitGridCoord;
+        int32 TileIndex;
         
-        UE_LOG(LogTemp, Log, TEXT("Placed module at (%d, %d, %d)"), 
-            CurrentGridCoord.X, CurrentGridCoord.Y, CurrentGridCoord.Z);
+        if (InstancedRenderer->GetHitModuleAndTile(Hit, HitGridCoord, TileIndex))
+        {
+            // Shift = single tile, no shift = full module
+            bool bSingleTile = bModifierHeld;
+            
+            // Check if highlight needs to change
+            bool bNeedsUpdate = !bHasHighlight ||
+                               !(HitGridCoord == LastHighlightCoord) ||
+                               (bSingleTile && LastHighlightTile != TileIndex) ||
+                               (bSingleTile != bLastHighlightWasSingleTile);
+            
+            if (bNeedsUpdate)
+            {
+                InstancedRenderer->SetTileHighlight(HitGridCoord, TileIndex, true, bSingleTile);
+                LastHighlightCoord = HitGridCoord;
+                LastHighlightTile = TileIndex;
+                bLastHighlightWasSingleTile = bSingleTile;
+                bHasHighlight = true;
+            }
+            return;
+        }
     }
+    
+    // No hit - clear highlight
+    if (bHasHighlight)
+    {
+        InstancedRenderer->ClearAllHighlights();
+        bHasHighlight = false;
+        LastHighlightTile = -1;
+    }
+}
+
+void AF12BuilderController::InitializeGhostPreview()
+{
+    if (!InstancedRenderer || !InstancedRenderer->TileStaticMesh)
+        return;
+
+    // Get face transforms from renderer
+    GhostFaceTransforms = InstancedRenderer->GetFaceTransforms();
+    
+    if (GhostFaceTransforms.Num() != 12)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Ghost init: Expected 12 face transforms, got %d"), GhostFaceTransforms.Num());
+        return;
+    }
+
+    // Create an actor to hold our ghost meshes
+    AActor* GhostActor = GetWorld()->SpawnActor<AActor>(AActor::StaticClass());
+    if (!GhostActor)
+        return;
+
+    // Create root component
+    USceneComponent* GhostRoot = NewObject<USceneComponent>(GhostActor);
+    GhostRoot->RegisterComponent();
+    GhostActor->SetRootComponent(GhostRoot);
+
+    // Create enough mesh components for MaxDragPreview modules (12 tiles each)
+    int32 TotalMeshes = MaxDragPreview * 12;
+    GhostMeshComponents.SetNum(TotalMeshes);
+    
+    for (int32 i = 0; i < TotalMeshes; i++)
+    {
+        UStaticMeshComponent* GhostMesh = NewObject<UStaticMeshComponent>(GhostActor);
+        GhostMesh->SetStaticMesh(InstancedRenderer->TileStaticMesh);
+        GhostMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        GhostMesh->SetVisibility(false);
+        
+        // Apply ghost material if set
+        if (GhostMaterial)
+        {
+            GhostMesh->SetMaterial(0, GhostMaterial);
+        }
+        
+        GhostMesh->AttachToComponent(GhostRoot, FAttachmentTransformRules::KeepRelativeTransform);
+        GhostMesh->RegisterComponent();
+        
+        GhostMeshComponents[i] = GhostMesh;
+    }
+    
+    UE_LOG(LogTemp, Log, TEXT("Ghost preview created with %d tile meshes (max %d modules)"), TotalMeshes, MaxDragPreview);
+}
+
+void AF12BuilderController::UpdateGhostPreview()
+{
+    // Single ghost at cursor when not dragging
+    if (bValidPlacement && !bIsDragging)
+    {
+        ShowGhostAtCoord(CurrentGridCoord, 0);
+        
+        // Hide remaining ghosts
+        for (int32 i = 12; i < GhostMeshComponents.Num(); i++)
+        {
+            if (GhostMeshComponents[i])
+            {
+                GhostMeshComponents[i]->SetVisibility(false);
+            }
+        }
+    }
+    else if (!bIsDragging)
+    {
+        HideAllGhosts();
+    }
+}
+
+void AF12BuilderController::UpdateDragPreview()
+{
+    if (!GridSystem || !InstancedRenderer)
+        return;
+
+    // Get current mouse position in world
+    FHitResult Hit;
+    FVector CurrentMouseWorld;
+    
+    if (TraceFromCamera(Hit))
+    {
+        CurrentMouseWorld = Hit.ImpactPoint;
+    }
+    else
+    {
+        // No hit - try to project mouse into world at a reasonable distance
+        FVector WorldLocation, WorldDirection;
+        if (DeprojectMousePositionToWorld(WorldLocation, WorldDirection))
+        {
+            CurrentMouseWorld = WorldLocation + WorldDirection * 2000.0f;
+        }
+        else
+        {
+            return;
+        }
+    }
+    
+    // Calculate how far we've dragged along the drag direction
+    FVector DragVector = CurrentMouseWorld - DragStartWorldPos;
+    float DragDistance = FVector::DotProduct(DragVector, DragDirection);
+    
+    // Clamp to positive (can only drag outward)
+    DragDistance = FMath::Max(0.0f, DragDistance);
+    
+    // Calculate number of modules based on distance
+    // Use the actual module spacing for accurate placement
+    float StepSize = GridSystem->GetModuleSpacing();
+    int32 NumModules = FMath::FloorToInt(DragDistance / StepSize) + 1;
+    NumModules = FMath::Clamp(NumModules, 1, MaxDragPreview);
+    
+    // Build list of preview coordinates
+    DragPreviewCoords.Empty();
+    FIntVector GridOffset = GridSystem->GetGridOffsetForFace(DragFaceIndex);
+    
+    for (int32 i = 0; i < NumModules; i++)
+    {
+        FF12GridCoord Coord;
+        Coord.X = DragStartCoord.X + GridOffset.X * i;
+        Coord.Y = DragStartCoord.Y + GridOffset.Y * i;
+        Coord.Z = DragStartCoord.Z + GridOffset.Z * i;
+        
+        // Only add if not occupied
+        if (!GridSystem->IsOccupied(Coord))
+        {
+            DragPreviewCoords.Add(Coord);
+        }
+        else
+        {
+            break;  // Stop at first occupied cell
+        }
+    }
+    
+    // Show ghosts for each preview coord
+    for (int32 i = 0; i < DragPreviewCoords.Num(); i++)
+    {
+        ShowGhostAtCoord(DragPreviewCoords[i], i);
+    }
+    
+    // Hide remaining ghosts
+    int32 StartHide = DragPreviewCoords.Num() * 12;
+    for (int32 i = StartHide; i < GhostMeshComponents.Num(); i++)
+    {
+        if (GhostMeshComponents[i])
+        {
+            GhostMeshComponents[i]->SetVisibility(false);
+        }
+    }
+}
+
+void AF12BuilderController::ShowGhostAtCoord(FF12GridCoord Coord, int32 GhostSetIndex)
+{
+    if (!GridSystem)
+        return;
+    
+    int32 BaseIndex = GhostSetIndex * 12;
+    if (BaseIndex + 11 >= GhostMeshComponents.Num())
+        return;
+
+    // Get world position for this module coordinate
+    FVector ModuleCenter = GridSystem->GridToWorld(Coord);
+    
+    // Position each ghost tile at its face location
+    for (int32 i = 0; i < 12; i++)
+    {
+        int32 MeshIndex = BaseIndex + i;
+        if (GhostMeshComponents[MeshIndex] && GhostFaceTransforms.IsValidIndex(i))
+        {
+            // Face transform is relative to module center
+            FTransform FaceLocal = GhostFaceTransforms[i];
+            
+            // Apply to world position
+            FVector TilePos = ModuleCenter + FaceLocal.GetLocation();
+            FQuat TileRot = FaceLocal.GetRotation();
+            
+            GhostMeshComponents[MeshIndex]->SetWorldLocation(TilePos);
+            GhostMeshComponents[MeshIndex]->SetWorldRotation(TileRot);
+            GhostMeshComponents[MeshIndex]->SetVisibility(true);
+        }
+    }
+}
+
+void AF12BuilderController::HideGhost()
+{
+    // Hide first ghost module only
+    for (int32 i = 0; i < 12 && i < GhostMeshComponents.Num(); i++)
+    {
+        if (GhostMeshComponents[i])
+        {
+            GhostMeshComponents[i]->SetVisibility(false);
+        }
+    }
+}
+
+void AF12BuilderController::HideAllGhosts()
+{
+    for (UStaticMeshComponent* GhostMesh : GhostMeshComponents)
+    {
+        if (GhostMesh)
+        {
+            GhostMesh->SetVisibility(false);
+        }
+    }
+}
+
+void AF12BuilderController::PlaceDraggedModules()
+{
+    if (!GridSystem || !InstancedRenderer || DragPreviewCoords.Num() == 0)
+        return;
+
+    for (const FF12GridCoord& Coord : DragPreviewCoords)
+    {
+        if (!GridSystem->IsOccupied(Coord))
+        {
+            InstancedRenderer->AddModule(Coord, CurrentPaintMaterialIndex);
+            GridSystem->SetOccupied(Coord, nullptr);
+        }
+    }
+    
+    UE_LOG(LogTemp, Log, TEXT("Placed %d modules from drag"), DragPreviewCoords.Num());
+}
+
+void AF12BuilderController::PlaceModule()
+{
+    if (!bValidPlacement || !GridSystem || !InstancedRenderer)
+        return;
+
+    InstancedRenderer->AddModule(CurrentGridCoord, CurrentPaintMaterialIndex);
+    GridSystem->SetOccupied(CurrentGridCoord, nullptr);
+    
+    UE_LOG(LogTemp, Log, TEXT("Placed module at (%d, %d, %d)"), 
+        CurrentGridCoord.X, CurrentGridCoord.Y, CurrentGridCoord.Z);
 }
 
 void AF12BuilderController::RemoveModule()
 {
-    if (!GridSystem)
+    if (!GridSystem || !InstancedRenderer)
         return;
 
-    // In build mode, remove at current grid position
-    if (CurrentGridCoord.X == 0 && CurrentGridCoord.Y == 0 && CurrentGridCoord.Z == 0)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("Cannot remove core module"));
-        return;
-    }
-
-    AActor* ModuleActor = GridSystem->GetModuleAt(CurrentGridCoord);
-    AF12Module* ModuleToRemove = Cast<AF12Module>(ModuleActor);
-    
-    if (ModuleToRemove)
-    {
-        // Record for undo
-        FF12BuilderAction Action = FF12BuilderAction::CreateRemoveModule(CurrentGridCoord, ModuleToRemove);
-        ActionHistory->AddAction(Action);
-        
-        GridSystem->ClearOccupied(CurrentGridCoord);
-        ModuleToRemove->Destroy();
-        
-        UE_LOG(LogTemp, Log, TEXT("Removed module at (%d, %d, %d)"), 
-            CurrentGridCoord.X, CurrentGridCoord.Y, CurrentGridCoord.Z);
-    }
-}
-
-void AF12BuilderController::CyclePaintMaterial()
-{
-    if (PaintMaterials.Num() > 0)
-    {
-        CurrentPaintMaterialIndex = (CurrentPaintMaterialIndex + 1) % PaintMaterials.Num();
-    }
-}
-
-// === DRAG BUILD SYSTEM ===
-
-void AF12BuilderController::StartDragBuild(FF12GridCoord StartCoord, int32 FaceIndex)
-{
-    bIsDragBuilding = true;
-    DragStartCoord = StartCoord;
-    DragStartFaceIndex = FaceIndex;
-    
-    // Get the direction from the face normal
-    TArray<FIntVector> Offsets = GridSystem->GetNeighborOffsets();
-    if (FaceIndex >= 0 && FaceIndex < Offsets.Num())
-    {
-        DragDirection = Offsets[FaceIndex];
-    }
-    else
-    {
-        DragDirection = FIntVector(1, 0, 0);  // Default direction
-    }
-    
-    // Hide the regular ghost
-    if (GhostModule)
-    {
-        GhostModule->SetActorHiddenInGame(true);
-    }
-    
-    // Clear any existing drag ghosts
-    ClearDragGhosts();
-    DragCoords.Empty();
-    
-    // Create initial ghost at start position
-    DragCoords.Add(StartCoord);
-    AF12Module* FirstGhost = CreateDragGhost();
-    if (FirstGhost)
-    {
-        FirstGhost->SetActorLocation(GridSystem->GridToWorld(StartCoord));
-    }
-    
-    UE_LOG(LogTemp, Log, TEXT("Started drag build at (%d, %d, %d) direction (%d, %d, %d)"),
-        StartCoord.X, StartCoord.Y, StartCoord.Z,
-        DragDirection.X, DragDirection.Y, DragDirection.Z);
-}
-
-void AF12BuilderController::UpdateDragBuild()
-{
-    if (!bIsDragBuilding || !GridSystem)
-        return;
-
-    // Get current cursor world position
-    FVector WorldLocation, WorldDirection;
-    if (!DeprojectMousePositionToWorld(WorldLocation, WorldDirection))
-        return;
-
-    // Calculate drag length based on cursor distance from start
-    FVector StartWorldPos = GridSystem->GridToWorld(DragStartCoord);
-    
-    // Project cursor onto the drag direction
-    FVector DragDirWorld = FVector(DragDirection.X, DragDirection.Y, DragDirection.Z).GetSafeNormal();
-    float GridSpacing = GridSystem->ModuleSize * 0.707f;
-    
-    // Trace to find where cursor is pointing
     FHitResult Hit;
-    FVector TraceStart = WorldLocation;
-    FVector TraceEnd = WorldLocation + (WorldDirection * TraceDistance);
-    
-    FCollisionQueryParams QueryParams;
-    QueryParams.AddIgnoredActor(GhostModule);
-    for (AF12Module* Ghost : DragGhostModules)
+    if (TraceFromCamera(Hit))
     {
-        if (Ghost) QueryParams.AddIgnoredActor(Ghost);
-    }
-    
-    FVector TargetPos = TraceEnd;  // Default far away
-    if (GetWorld()->LineTraceSingleByChannel(Hit, TraceStart, TraceEnd, ECC_Visibility, QueryParams))
-    {
-        TargetPos = Hit.Location;
-    }
-    else
-    {
-        // If we didn't hit anything, project onto a plane at the start position
-        FPlane DragPlane(StartWorldPos, FVector(0, 0, 1));  // Horizontal plane
-        FVector IntersectionPoint;
-        if (FMath::SegmentPlaneIntersection(TraceStart, TraceEnd, DragPlane, IntersectionPoint))
-        {
-            TargetPos = IntersectionPoint;
-        }
-    }
-    
-    // Calculate how many modules fit in the drag direction
-    FVector Delta = TargetPos - StartWorldPos;
-    float ProjectedDist = FVector::DotProduct(Delta, DragDirWorld);
-    int32 NumModules = FMath::Max(1, FMath::RoundToInt(ProjectedDist / GridSpacing) + 1);
-    NumModules = FMath::Min(NumModules, MaxDragModules);
-    
-    // Build new coord list
-    TArray<FF12GridCoord> NewCoords;
-    FF12GridCoord CurrentCoord = DragStartCoord;
-    
-    for (int32 i = 0; i < NumModules; i++)
-    {
-        if (!GridSystem->IsOccupied(CurrentCoord))
-        {
-            NewCoords.Add(CurrentCoord);
-        }
+        FF12GridCoord GridCoord;
+        int32 TileIndex;
         
-        // Move to next position in drag direction
-        CurrentCoord = FF12GridCoord(
-            CurrentCoord.X + DragDirection.X,
-            CurrentCoord.Y + DragDirection.Y,
-            CurrentCoord.Z + DragDirection.Z
-        );
-    }
-    
-    // Only update ghosts if coords changed
-    if (NewCoords != DragCoords)
-    {
-        DragCoords = NewCoords;
-        
-        // Adjust ghost count
-        while (DragGhostModules.Num() < DragCoords.Num())
+        if (InstancedRenderer->GetHitModuleAndTile(Hit, GridCoord, TileIndex))
         {
-            CreateDragGhost();
-        }
-        while (DragGhostModules.Num() > DragCoords.Num())
-        {
-            AF12Module* Ghost = DragGhostModules.Pop();
-            if (Ghost) Ghost->Destroy();
-        }
-        
-        // Position ghosts
-        for (int32 i = 0; i < DragCoords.Num() && i < DragGhostModules.Num(); i++)
-        {
-            if (DragGhostModules[i])
+            // Can't delete core
+            if (GridCoord.X == 0 && GridCoord.Y == 0 && GridCoord.Z == 0)
             {
-                DragGhostModules[i]->SetActorLocation(GridSystem->GridToWorld(DragCoords[i]));
-                DragGhostModules[i]->SetActorHiddenInGame(false);
+                UE_LOG(LogTemp, Warning, TEXT("Cannot remove core module"));
+                return;
             }
+            
+            InstancedRenderer->RemoveModule(GridCoord);
+            GridSystem->ClearOccupied(GridCoord);
+            
+            UE_LOG(LogTemp, Log, TEXT("Removed module at (%d, %d, %d)"), GridCoord.X, GridCoord.Y, GridCoord.Z);
         }
     }
 }
 
-void AF12BuilderController::CompleteDragBuild()
+// === PROCEDURAL GENERATION ===
+
+void AF12BuilderController::ToggleGeneratorPanel()
 {
-    if (!bIsDragBuilding || DragCoords.Num() == 0)
+    if (GeneratorWidget)
     {
-        CancelDragBuild();
-        return;
+        GeneratorWidget->TogglePanel();
     }
+}
 
-    UE_LOG(LogTemp, Log, TEXT("Completing drag build with %d modules"), DragCoords.Num());
+bool AF12BuilderController::IsGeneratorPanelVisible() const
+{
+    return GeneratorWidget && GeneratorWidget->IsPanelVisible();
+}
 
-    // Place all modules
-    TArray<FF12GridCoord> PlacedCoords;
-    for (const FF12GridCoord& Coord : DragCoords)
+void AF12BuilderController::GenerateModules(const TArray<FF12GridCoord>& Coords)
+{
+    if (!InstancedRenderer || !GridSystem || Coords.Num() == 0)
+        return;
+
+    TArray<FF12GridCoord> ValidCoords;
+    
+    for (const FF12GridCoord& Coord : Coords)
     {
         if (!GridSystem->IsOccupied(Coord))
         {
-            AF12Module* NewModule = SpawnModuleAtCoord(Coord);
-            if (NewModule)
-            {
-                PlacedCoords.Add(Coord);
-            }
+            ValidCoords.Add(Coord);
+            GridSystem->SetOccupied(Coord, nullptr);
         }
-    }
-
-    // Record as a single action for undo
-    if (PlacedCoords.Num() > 0)
-    {
-        FF12BuilderAction Action = FF12BuilderAction::CreatePlaceMultiple(PlacedCoords);
-        ActionHistory->AddAction(Action);
-    }
-
-    // Clean up
-    ClearDragGhosts();
-    DragCoords.Empty();
-    bIsDragBuilding = false;
-
-    // Show regular ghost again
-    if (GhostModule)
-    {
-        GhostModule->SetActorHiddenInGame(false);
-    }
-}
-
-void AF12BuilderController::CancelDragBuild()
-{
-    ClearDragGhosts();
-    DragCoords.Empty();
-    bIsDragBuilding = false;
-
-    // Show regular ghost again
-    if (GhostModule && CurrentMode == EF12BuilderMode::Build)
-    {
-        GhostModule->SetActorHiddenInGame(false);
-    }
-
-    UE_LOG(LogTemp, Log, TEXT("Drag build cancelled"));
-}
-
-AF12Module* AF12BuilderController::CreateDragGhost()
-{
-    if (!ModuleClass)
-        return nullptr;
-
-    FActorSpawnParameters SpawnParams;
-    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-    
-    AF12Module* Ghost = GetWorld()->SpawnActor<AF12Module>(ModuleClass, FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
-    
-    if (Ghost)
-    {
-        Ghost->SetActorEnableCollision(false);
-        
-        // Apply ghost material if set
-        if (DragGhostMaterial)
-        {
-            Ghost->TileMaterial = DragGhostMaterial;
-        }
-        else if (DefaultModuleMaterial)
-        {
-            Ghost->TileMaterial = DefaultModuleMaterial;
-        }
-        
-        Ghost->TileMaterials = PaintMaterials;
-        Ghost->GenerateModule();
-        
-        DragGhostModules.Add(Ghost);
     }
     
-    return Ghost;
-}
-
-void AF12BuilderController::ClearDragGhosts()
-{
-    for (AF12Module* Ghost : DragGhostModules)
-    {
-        if (Ghost)
-        {
-            Ghost->Destroy();
-        }
-    }
-    DragGhostModules.Empty();
-}
-
-// === DELETE HIGHLIGHT SYSTEM ===
-
-void AF12BuilderController::UpdateDeleteHighlight()
-{
-    // Only show highlight in delete mode
-    if (CurrentMode != EF12BuilderMode::Delete)
-    {
-        ClearHighlight();
-        return;
-    }
-
-    int32 TileIndex = -1;
-    AF12Module* Module = GetModuleUnderCursor(TileIndex);
-
-    // Check if we're hovering over something new
-    bool bSameTarget = (Module == HighlightedModule);
-    if (bModifierHeld)
-    {
-        bSameTarget = bSameTarget && (TileIndex == HighlightedTileIndex);
-    }
-
-    if (!bSameTarget)
-    {
-        // Clear old highlight
-        ClearHighlight();
-
-        // Apply new highlight
-        if (Module && DeleteHighlightMaterial)
-        {
-            HighlightedModule = Module;
-            HighlightedTileIndex = TileIndex;
-            HighlightedOriginalMaterials.Empty();
-
-            if (bModifierHeld && TileIndex >= 0)
-            {
-                // Highlight single tile
-                if (Module->TileMeshes.IsValidIndex(TileIndex) && Module->TileMeshes[TileIndex])
-                {
-                    HighlightedOriginalMaterials.Add(Module->TileMeshes[TileIndex]->GetMaterial(0));
-                    Module->TileMeshes[TileIndex]->SetMaterial(0, DeleteHighlightMaterial);
-                }
-            }
-            else
-            {
-                // Highlight entire module
-                for (int32 i = 0; i < Module->TileMeshes.Num(); i++)
-                {
-                    if (Module->TileMeshes[i])
-                    {
-                        HighlightedOriginalMaterials.Add(Module->TileMeshes[i]->GetMaterial(0));
-                        Module->TileMeshes[i]->SetMaterial(0, DeleteHighlightMaterial);
-                    }
-                }
-            }
-        }
-    }
-}
-
-void AF12BuilderController::ClearHighlight()
-{
-    if (HighlightedModule && HighlightedOriginalMaterials.Num() > 0)
-    {
-        if (HighlightedTileIndex >= 0 && HighlightedOriginalMaterials.Num() == 1)
-        {
-            // Was highlighting single tile
-            if (HighlightedModule->TileMeshes.IsValidIndex(HighlightedTileIndex) && 
-                HighlightedModule->TileMeshes[HighlightedTileIndex])
-            {
-                HighlightedModule->TileMeshes[HighlightedTileIndex]->SetMaterial(0, HighlightedOriginalMaterials[0]);
-            }
-        }
-        else
-        {
-            // Was highlighting entire module
-            for (int32 i = 0; i < HighlightedModule->TileMeshes.Num() && i < HighlightedOriginalMaterials.Num(); i++)
-            {
-                if (HighlightedModule->TileMeshes[i])
-                {
-                    HighlightedModule->TileMeshes[i]->SetMaterial(0, HighlightedOriginalMaterials[i]);
-                }
-            }
-        }
-    }
-
-    HighlightedModule = nullptr;
-    HighlightedTileIndex = -1;
-    HighlightedOriginalMaterials.Empty();
-}
-
-// === UNDO/REDO SYSTEM ===
-
-void AF12BuilderController::Undo()
-{
-    if (!ActionHistory || !ActionHistory->CanUndo())
-    {
-        UE_LOG(LogTemp, Log, TEXT("Nothing to undo"));
-        return;
-    }
-
-    FF12BuilderAction Action = ActionHistory->PopForUndo();
-    ExecuteUndo(Action);
+    InstancedRenderer->AddModulesBulk(ValidCoords, CurrentPaintMaterialIndex);
     
-    UE_LOG(LogTemp, Log, TEXT("Undo performed. Remaining: %d undo, %d redo"), 
-        ActionHistory->GetUndoCount(), ActionHistory->GetRedoCount());
-}
-
-void AF12BuilderController::Redo()
-{
-    if (!ActionHistory || !ActionHistory->CanRedo())
-    {
-        UE_LOG(LogTemp, Log, TEXT("Nothing to redo"));
-        return;
-    }
-
-    FF12BuilderAction Action = ActionHistory->PopForRedo();
-    ExecuteRedo(Action);
-    
-    UE_LOG(LogTemp, Log, TEXT("Redo performed. Remaining: %d undo, %d redo"), 
-        ActionHistory->GetUndoCount(), ActionHistory->GetRedoCount());
-}
-
-bool AF12BuilderController::CanUndo() const
-{
-    return ActionHistory && ActionHistory->CanUndo();
-}
-
-bool AF12BuilderController::CanRedo() const
-{
-    return ActionHistory && ActionHistory->CanRedo();
-}
-
-void AF12BuilderController::ExecuteUndo(const FF12BuilderAction& Action)
-{
-    switch (Action.ActionType)
-    {
-        case EF12ActionType::PlaceModule:
-        {
-            // Undo place = remove
-            RemoveModuleAtCoord(Action.GridCoord);
-            break;
-        }
-        
-        case EF12ActionType::RemoveModule:
-        {
-            // Undo remove = place with stored state
-            AF12Module* Module = SpawnModuleAtCoord(Action.GridCoord, 
-                &Action.StoredMaterialIndices, &Action.StoredVisibility);
-            break;
-        }
-        
-        case EF12ActionType::PaintTile:
-        {
-            AF12Module* Module = Action.AffectedModule.Get();
-            if (Module)
-            {
-                Module->SetTileMaterialIndex(Action.TileIndex, Action.OldMaterialIndex);
-            }
-            break;
-        }
-        
-        case EF12ActionType::PaintModule:
-        {
-            AF12Module* Module = Action.AffectedModule.Get();
-            if (Module)
-            {
-                for (int32 i = 0; i < 12 && i < Action.StoredMaterialIndices.Num(); i++)
-                {
-                    Module->SetTileMaterialIndex(i, Action.StoredMaterialIndices[i]);
-                }
-            }
-            break;
-        }
-        
-        case EF12ActionType::DeleteTile:
-        {
-            AF12Module* Module = Action.AffectedModule.Get();
-            if (Module)
-            {
-                Module->SetTileVisible(Action.TileIndex, true);  // Restore visibility
-            }
-            break;
-        }
-        
-        case EF12ActionType::RestoreTile:
-        {
-            AF12Module* Module = Action.AffectedModule.Get();
-            if (Module)
-            {
-                Module->SetTileVisible(Action.TileIndex, false);  // Hide again
-            }
-            break;
-        }
-        
-        case EF12ActionType::PlaceMultipleModules:
-        {
-            // Undo multiple place = remove all
-            for (const FF12GridCoord& Coord : Action.MultipleCoords)
-            {
-                RemoveModuleAtCoord(Coord);
-            }
-            break;
-        }
-    }
-}
-
-void AF12BuilderController::ExecuteRedo(const FF12BuilderAction& Action)
-{
-    switch (Action.ActionType)
-    {
-        case EF12ActionType::PlaceModule:
-        {
-            // Redo place = place again
-            SpawnModuleAtCoord(Action.GridCoord);
-            break;
-        }
-        
-        case EF12ActionType::RemoveModule:
-        {
-            // Redo remove = remove again
-            RemoveModuleAtCoord(Action.GridCoord);
-            break;
-        }
-        
-        case EF12ActionType::PaintTile:
-        {
-            AF12Module* Module = Action.AffectedModule.Get();
-            if (Module)
-            {
-                Module->SetTileMaterialIndex(Action.TileIndex, Action.NewMaterialIndex);
-            }
-            break;
-        }
-        
-        case EF12ActionType::PaintModule:
-        {
-            AF12Module* Module = Action.AffectedModule.Get();
-            if (Module)
-            {
-                for (int32 i = 0; i < 12; i++)
-                {
-                    Module->SetTileMaterialIndex(i, Action.NewMaterialIndex);
-                }
-            }
-            break;
-        }
-        
-        case EF12ActionType::DeleteTile:
-        {
-            AF12Module* Module = Action.AffectedModule.Get();
-            if (Module)
-            {
-                Module->SetTileVisible(Action.TileIndex, false);  // Hide again
-            }
-            break;
-        }
-        
-        case EF12ActionType::RestoreTile:
-        {
-            AF12Module* Module = Action.AffectedModule.Get();
-            if (Module)
-            {
-                Module->SetTileVisible(Action.TileIndex, true);  // Restore again
-            }
-            break;
-        }
-        
-        case EF12ActionType::PlaceMultipleModules:
-        {
-            // Redo multiple place = place all again
-            for (const FF12GridCoord& Coord : Action.MultipleCoords)
-            {
-                SpawnModuleAtCoord(Coord);
-            }
-            break;
-        }
-    }
-}
-
-AF12Module* AF12BuilderController::SpawnModuleAtCoord(FF12GridCoord Coord, 
-    const TArray<int32>* MaterialIndices, const TArray<bool>* Visibility)
-{
-    if (!ModuleClass || !GridSystem || GridSystem->IsOccupied(Coord))
-        return nullptr;
-
-    FVector SpawnPos = GridSystem->GridToWorld(Coord);
-    
-    FActorSpawnParameters SpawnParams;
-    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-    
-    AF12Module* NewModule = GetWorld()->SpawnActor<AF12Module>(ModuleClass, SpawnPos, FRotator::ZeroRotator, SpawnParams);
-    
-    if (NewModule)
-    {
-        if (DefaultModuleMaterial)
-        {
-            NewModule->TileMaterial = DefaultModuleMaterial;
-        }
-        
-        NewModule->TileMaterials = PaintMaterials;
-        NewModule->GenerateModule();
-        
-        // Restore material indices if provided
-        if (MaterialIndices && MaterialIndices->Num() == 12)
-        {
-            for (int32 i = 0; i < 12; i++)
-            {
-                NewModule->SetTileMaterialIndex(i, (*MaterialIndices)[i]);
-            }
-        }
-        
-        // Restore visibility if provided
-        if (Visibility && Visibility->Num() == 12)
-        {
-            for (int32 i = 0; i < 12; i++)
-            {
-                NewModule->SetTileVisible(i, (*Visibility)[i]);
-            }
-        }
-        
-        GridSystem->SetOccupied(Coord, NewModule);
-    }
-    
-    return NewModule;
-}
-
-void AF12BuilderController::RemoveModuleAtCoord(FF12GridCoord Coord)
-{
-    if (!GridSystem)
-        return;
-
-    // Don't remove core module
-    if (Coord.X == 0 && Coord.Y == 0 && Coord.Z == 0)
-        return;
-
-    AActor* ModuleActor = GridSystem->GetModuleAt(Coord);
-    if (ModuleActor)
-    {
-        GridSystem->ClearOccupied(Coord);
-        ModuleActor->Destroy();
-    }
+    UE_LOG(LogTemp, Log, TEXT("Generated %d modules"), ValidCoords.Num());
 }
 
 // === HUD HELPERS ===
@@ -1170,17 +874,16 @@ FLinearColor AF12BuilderController::GetCurrentPaintColor() const
         return PaintColors[CurrentPaintMaterialIndex];
     }
     
-    // Fallback: If no PaintColors set, generate a color based on index
+    // Fallback colors
     static const FLinearColor FallbackColors[] = {
-        FLinearColor(1.0f, 0.3f, 0.3f, 1.0f),  // Red
         FLinearColor(0.3f, 1.0f, 0.3f, 1.0f),  // Green
-        FLinearColor(0.3f, 0.3f, 1.0f, 1.0f),  // Blue
-        FLinearColor(1.0f, 1.0f, 0.3f, 1.0f),  // Yellow
-        FLinearColor(1.0f, 0.3f, 1.0f, 1.0f),  // Magenta
-        FLinearColor(0.3f, 1.0f, 1.0f, 1.0f),  // Cyan
+        FLinearColor(1.0f, 0.5f, 0.8f, 1.0f),  // Pink
+        FLinearColor(1.0f, 1.0f, 1.0f, 1.0f),  // White
+        FLinearColor(0.3f, 0.5f, 1.0f, 1.0f),  // Blue
+        FLinearColor(0.9f, 0.8f, 0.6f, 1.0f),  // Tan
     };
     
-    int32 ColorIndex = CurrentPaintMaterialIndex % 6;
+    int32 ColorIndex = CurrentPaintMaterialIndex % 5;
     return FallbackColors[ColorIndex];
 }
 
@@ -1195,27 +898,12 @@ FString AF12BuilderController::GetModeName() const
     }
 }
 
-int32 AF12BuilderController::GetUndoCount() const
+int32 AF12BuilderController::GetModuleCount() const
 {
-    return ActionHistory ? ActionHistory->GetUndoCount() : 0;
+    return InstancedRenderer ? InstancedRenderer->GetModuleCount() : 0;
 }
 
-int32 AF12BuilderController::GetRedoCount() const
+FString AF12BuilderController::GetPerformanceStats() const
 {
-    return ActionHistory ? ActionHistory->GetRedoCount() : 0;
-}
-
-// === GENERATOR PANEL ===
-
-void AF12BuilderController::ToggleGeneratorPanel()
-{
-    if (GeneratorWidget)
-    {
-        GeneratorWidget->TogglePanel();
-    }
-}
-
-bool AF12BuilderController::IsGeneratorPanelVisible() const
-{
-    return GeneratorWidget && GeneratorWidget->IsPanelVisible();
+    return InstancedRenderer ? InstancedRenderer->GetPerformanceStats() : TEXT("No renderer");
 }

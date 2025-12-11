@@ -52,7 +52,11 @@ public:
 
     // Size of each module (should match F12Module::ModuleSize)
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid")
-    float ModuleSize = 400.0f;
+    float ModuleSize = 600.0f;
+
+    // Thickness of each tile (should match Blender mesh)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grid")
+    float TileThickness = 50.0f;
 
     // Convert world position to nearest grid coordinate
     UFUNCTION(BlueprintCallable, Category = "Grid")
@@ -99,6 +103,21 @@ public:
     // Face normals for determining which face was hit (public for visualization)
     UFUNCTION(BlueprintCallable, Category = "Grid")
     TArray<FVector> GetFaceNormals();
+
+    // Get a single face normal by index
+    UFUNCTION(BlueprintCallable, Category = "Grid")
+    FVector GetFaceNormal(int32 FaceIndex);
+
+    // Get the grid offset direction for a face (for drag build)
+    UFUNCTION(BlueprintCallable, Category = "Grid")
+    FIntVector GetGridOffsetForFace(int32 FaceIndex);
+
+    // Get the spacing between module centers
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Grid")
+    float GetModuleSpacing() const;
+
+    // Get all occupied cells (for iteration)
+    const TMap<FF12GridCoord, AActor*>& GetOccupiedCells() const { return OccupiedPositions; }
 
 protected:
     // Map of occupied positions to module actors

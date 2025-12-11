@@ -1,6 +1,6 @@
 // F12BuilderController.h
-// Player controller for the F12 Station Builder with Mode System
-// Includes: Undo/Redo, Drag Build Mode, Procedural Generation
+// Player controller for the F12 Station Builder
+// Uses instanced rendering exclusively for maximum performance
 
 #pragma once
 
@@ -8,10 +8,9 @@
 #include "GameFramework/PlayerController.h"
 #include "Blueprint/UserWidget.h"
 #include "F12GridSystem.h"
-#include "F12BuilderActions.h"
 #include "F12BuilderController.generated.h"
 
-class AF12Module;
+class AF12InstancedRenderer;
 class UF12ProceduralGenerator;
 class UF12GeneratorWidget;
 
@@ -42,28 +41,18 @@ public:
     AF12GridSystem* GridSystem;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder")
-    TSubclassOf<AF12Module> ModuleClass;
+    AF12InstancedRenderer* InstancedRenderer;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder")
-    UMaterialInterface* DefaultModuleMaterial;
-
-    // Array of materials for painting
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|Paint")
-    TArray<UMaterialInterface*> PaintMaterials;
-
-    // Parallel array of colors for HUD display (set these to match your materials)
+    // Array of colors for HUD display (should match renderer's TileMaterials)
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|Paint")
     TArray<FLinearColor> PaintColors;
 
-    // === DELETE HIGHLIGHT ===
-    
-    // Material to show when hovering in delete mode (create a red emissive material)
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|Highlight")
-    UMaterialInterface* DeleteHighlightMaterial;
+    // Ghost preview material (semi-transparent)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|Preview")
+    UMaterialInterface* GhostMaterial;
 
     // === HUD ===
     
-    // Widget class to spawn for HUD (set this to your WBP_BuilderHUD)
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|HUD")
     TSubclassOf<UUserWidget> HUDWidgetClass;
 
@@ -78,44 +67,24 @@ public:
     // === PREVIEW ===
     
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder")
-    AF12Module* GhostModule;
-
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder")
     FF12GridCoord CurrentGridCoord;
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder")
-    bool bValidPlacement;
+    bool bValidPlacement = false;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder")
     float TraceDistance = 10000.0f;
-
-    // === UNDO/REDO SYSTEM ===
-    
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|History")
-    UF12ActionHistory* ActionHistory;
 
     // === PROCEDURAL GENERATION ===
     
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|Generation")
     UF12ProceduralGenerator* ProceduralGenerator;
 
-    // Widget class for generation UI
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|Generation")
     TSubclassOf<UUserWidget> GeneratorWidgetClass;
 
-    // Reference to spawned generator widget
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|Generation")
     UF12GeneratorWidget* GeneratorWidget;
-
-    // === DRAG BUILD SETTINGS ===
-    
-    // Maximum number of modules that can be placed in a single drag
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|DragBuild")
-    int32 MaxDragModules = 20;
-
-    // Material for ghost modules during drag (optional - uses default if not set)
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|DragBuild")
-    UMaterialInterface* DragGhostMaterial;
 
     // === MODE SWITCHING ===
     
@@ -137,33 +106,13 @@ public:
     // === ACTIONS ===
     
     UFUNCTION(BlueprintCallable, Category = "Builder")
-    void PlaceModule();
+    void PrimaryAction();
 
     UFUNCTION(BlueprintCallable, Category = "Builder")
-    void RemoveModule();
+    void SecondaryAction();
 
     UFUNCTION(BlueprintCallable, Category = "Builder")
-    void PrimaryAction();      // Left click - context dependent on mode
-
-    UFUNCTION(BlueprintCallable, Category = "Builder")
-    void SecondaryAction();    // Right click - context dependent on mode
-
-    UFUNCTION(BlueprintCallable, Category = "Builder")
-    void CyclePaintMaterial(); // Scroll wheel in paint mode
-
-    // === UNDO/REDO ===
-    
-    UFUNCTION(BlueprintCallable, Category = "Builder|History")
-    void Undo();
-
-    UFUNCTION(BlueprintCallable, Category = "Builder|History")
-    void Redo();
-
-    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|History")
-    bool CanUndo() const;
-
-    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|History")
-    bool CanRedo() const;
+    void CyclePaintMaterial();
 
     // === PROCEDURAL GENERATION ===
     
@@ -173,30 +122,23 @@ public:
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|Generation")
     bool IsGeneratorPanelVisible() const;
 
+    // Generate modules at given coordinates
+    UFUNCTION(BlueprintCallable, Category = "Builder|Generation")
+    void GenerateModules(const TArray<FF12GridCoord>& Coords);
+
     // === HUD HELPERS ===
     
-    // Get current paint color for HUD display
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|HUD")
     FLinearColor GetCurrentPaintColor() const;
 
-    // Get mode name as string
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|HUD")
     FString GetModeName() const;
 
-    // Get undo/redo counts for HUD
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|HUD")
-    int32 GetUndoCount() const;
+    int32 GetModuleCount() const;
 
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|HUD")
-    int32 GetRedoCount() const;
-
-    // Check if currently drag building
-    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|HUD")
-    bool IsDragBuilding() const { return bIsDragBuilding; }
-
-    // Get number of modules in current drag
-    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|HUD")
-    int32 GetDragModuleCount() const { return DragGhostModules.Num(); }
+    FString GetPerformanceStats() const;
 
 protected:
     // Input handlers
@@ -211,92 +153,66 @@ protected:
     void OnScrollDown();
     void OnModifierPressed();
     void OnModifierReleased();
-    void OnUndo();
-    void OnRedo();
     void OnToggleGenerator();
 
     // State
-    bool bModifierHeld = false;  // Shift key for tile-level actions and drag build
+    bool bModifierHeld = false;  // Shift key for tile-level operations
+    bool bIsDragging = false;    // Currently dragging to build a line
+    bool bIsPainting = false;    // Currently drag-painting
+    FF12GridCoord LastPaintedCoord;  // Prevent duplicate paints during drag
+    int32 LastPaintedTile = -1;
+    
+    // Drag line state
+    FF12GridCoord DragStartCoord;      // Where the drag started
+    FVector DragDirection;              // Direction to extend (face normal)
+    FVector DragStartWorldPos;          // World position where drag started
+    int32 DragFaceIndex;                // Which face was clicked
+    TArray<FF12GridCoord> DragPreviewCoords;  // Coords being previewed
 
-    // === DRAG BUILD STATE ===
-    
-    bool bIsDragBuilding = false;
-    FF12GridCoord DragStartCoord;
-    FIntVector DragDirection;  // The direction we're building in (from face normal)
-    int32 DragStartFaceIndex = -1;
-    
-    // Ghost modules for drag preview
+    // Ghost preview meshes for build mode (12 tiles per preview module)
     UPROPERTY()
-    TArray<AF12Module*> DragGhostModules;
-
-    // Coordinates that will be filled on drag complete
-    TArray<FF12GridCoord> DragCoords;
-
-    // === HIGHLIGHT TRACKING ===
-    UPROPERTY()
-    AF12Module* HighlightedModule = nullptr;
+    TArray<class UStaticMeshComponent*> GhostMeshComponents;
     
-    int32 HighlightedTileIndex = -1;
+    // Cached face transforms for ghost positioning
+    TArray<FTransform> GhostFaceTransforms;
     
-    UPROPERTY()
-    TArray<UMaterialInterface*> HighlightedOriginalMaterials;
-
-    // Update the ghost preview position
+    // Maximum modules per ghost set (for drag preview)
+    static const int32 MaxDragPreview = 50;
+    
+    void InitializeGhostPreview();
     void UpdateGhostPreview();
+    void UpdateDragPreview();
+    void ShowGhostAtCoord(FF12GridCoord Coord, int32 GhostSetIndex = 0);
+    void HideGhost();
+    void HideAllGhosts();
+    void PlaceDraggedModules();
 
-    // Delete mode highlight
-    void UpdateDeleteHighlight();
-    void ClearHighlight();
+    // Highlight tracking for delete mode
+    FF12GridCoord LastHighlightCoord;
+    int32 LastHighlightTile = -1;
+    bool bLastHighlightWasSingleTile = false;
+    bool bHasHighlight = false;
 
     // Perform trace from camera
     bool TraceFromCamera(FHitResult& OutHit);
 
-    // Get the module and tile under cursor
-    AF12Module* GetModuleUnderCursor(int32& OutTileIndex);
+    // Update ghost preview / cursor position
+    void UpdatePreview();
+
+    // Update delete highlight
+    void UpdateDeleteHighlight();
 
     // Mode-specific action handlers
     void HandleBuildPrimary();
-    void HandleBuildPrimaryRelease();
     void HandleBuildSecondary();
     void HandlePaintPrimary();
     void HandlePaintSecondary();
     void HandleDeletePrimary();
     void HandleDeleteSecondary();
 
-    // === DRAG BUILD HELPERS ===
-    
-    // Start a drag build operation
-    void StartDragBuild(FF12GridCoord StartCoord, int32 FaceIndex);
+    // Place a module at current grid coord
+    void PlaceModule();
 
-    // Update drag build preview based on current mouse position
-    void UpdateDragBuild();
-
-    // Complete the drag build and place all modules
-    void CompleteDragBuild();
-
-    // Cancel drag build without placing
-    void CancelDragBuild();
-
-    // Create a ghost module for drag preview
-    AF12Module* CreateDragGhost();
-
-    // Clear all drag ghost modules
-    void ClearDragGhosts();
-
-    // Calculate how many modules fit in a direction based on cursor distance
-    int32 CalculateDragLength(const FVector& CursorWorldPos);
-
-    // === UNDO/REDO EXECUTION ===
-    
-    // Execute an undo operation
-    void ExecuteUndo(const FF12BuilderAction& Action);
-
-    // Execute a redo operation  
-    void ExecuteRedo(const FF12BuilderAction& Action);
-
-    // Helper to spawn a module at a grid coord (used by undo/redo)
-    AF12Module* SpawnModuleAtCoord(FF12GridCoord Coord, const TArray<int32>* MaterialIndices = nullptr, const TArray<bool>* Visibility = nullptr);
-
-    // Helper to remove a module at a grid coord (used by undo/redo)
-    void RemoveModuleAtCoord(FF12GridCoord Coord);
+    // Remove the module under cursor
+    void RemoveModule();
 };

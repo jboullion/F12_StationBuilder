@@ -271,13 +271,6 @@ void UF12GeneratorWidget::OnGenerateClicked()
         StatusText->SetText(FText::FromString(Result.Message));
     }
 
-    // Record for undo if successful
-    if (Result.bSuccess && Result.CreatedCoords.Num() > 0 && Controller->ActionHistory)
-    {
-        FF12BuilderAction Action = FF12BuilderAction::CreatePlaceMultiple(Result.CreatedCoords);
-        Controller->ActionHistory->AddAction(Action);
-    }
-
     UE_LOG(LogTemp, Log, TEXT("Generation: %s"), *Result.Message);
 }
 

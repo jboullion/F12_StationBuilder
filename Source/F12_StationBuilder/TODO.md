@@ -20,3 +20,15 @@ F12 TODOs
 - What sizes are modules supposed to be?
 - Don't allow placing models on Earth surface
 - Try to prevent intersecting modules
+
+
+
+## Hero Image Ideas
+
+- Hero Image showing completed station in orbit
+
+- Image showing why we use the rhombus
+- Image showing station building process
+- Image showing different station designs
+- Different types of tiles
+- Connection types: Power, Data, Docking, Water

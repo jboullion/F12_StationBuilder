@@ -8,7 +8,6 @@
 #include "F12GridSystem.h"
 #include "F12ProceduralGenerator.generated.h"
 
-class AF12Module;
 class AF12BuilderController;
 
 // Shape types for generation
@@ -152,4 +151,7 @@ protected:
 
     // Apply offset and centering to coordinates
     FF12GridCoord ApplyOffset(int32 X, int32 Y, int32 Z, const FF12GenerationParams& Params);
+
+    // Check if a grid coordinate is valid for BCC lattice tessellation
+    bool IsValidBCCPosition(const FF12GridCoord& Coord);
 };

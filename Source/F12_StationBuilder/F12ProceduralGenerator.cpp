@@ -1,9 +1,10 @@
 // F12ProceduralGenerator.cpp
 // Implementation of the Procedural Generation System
+// Updated to use instanced rendering
 
 #include "F12ProceduralGenerator.h"
-#include "F12Module.h"
 #include "F12BuilderController.h"
+#include "F12InstancedRenderer.h"
 #include "Engine/World.h"
 
 UF12ProceduralGenerator::UF12ProceduralGenerator()
@@ -25,6 +26,13 @@ FF12GenerationResult UF12ProceduralGenerator::Generate(const FF12GenerationParam
     if (!GridSystem || !Controller)
     {
         Result.Message = TEXT("Generator not initialized");
+        return Result;
+    }
+
+    AF12InstancedRenderer* Renderer = Controller->InstancedRenderer;
+    if (!Renderer)
+    {
+        Result.Message = TEXT("No instanced renderer found");
         return Result;
     }
 
@@ -57,7 +65,9 @@ FF12GenerationResult UF12ProceduralGenerator::Generate(const FF12GenerationParam
         ClearRegion(MinCoord, MaxCoord, Params.bPreserveCore);
     }
 
-    // Spawn modules at each coordinate
+    // Filter valid coordinates
+    TArray<FF12GridCoord> ValidCoords;
+    
     for (const FF12GridCoord& Coord : Coords)
     {
         // Skip if occupied
@@ -74,39 +84,23 @@ FF12GenerationResult UF12ProceduralGenerator::Generate(const FF12GenerationParam
             continue;
         }
 
-        // Spawn module
-        FVector SpawnPos = GridSystem->GridToWorld(Coord);
-        
-        FActorSpawnParameters SpawnParams;
-        SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-        
-        AF12Module* NewModule = Controller->GetWorld()->SpawnActor<AF12Module>(
-            Controller->ModuleClass, SpawnPos, FRotator::ZeroRotator, SpawnParams);
-        
-        if (NewModule)
-        {
-            if (Controller->DefaultModuleMaterial)
-            {
-                NewModule->TileMaterial = Controller->DefaultModuleMaterial;
-            }
-            
-            NewModule->TileMaterials = Controller->PaintMaterials;
-            NewModule->GenerateModule();
+        ValidCoords.Add(Coord);
+        GridSystem->SetOccupied(Coord, nullptr);
+        Result.CreatedCoords.Add(Coord);
+        Result.ModulesCreated++;
+    }
 
-            // Apply material if specified
-            if (Params.MaterialIndex >= 0 && Controller->PaintMaterials.Num() > 0)
-            {
-                int32 MatIdx = Params.MaterialIndex % Controller->PaintMaterials.Num();
-                for (int32 i = 0; i < 12; i++)
-                {
-                    NewModule->SetTileMaterialIndex(i, MatIdx);
-                }
-            }
-            
-            GridSystem->SetOccupied(Coord, NewModule);
-            Result.CreatedCoords.Add(Coord);
-            Result.ModulesCreated++;
-        }
+    // Determine material index
+    int32 MatIdx = 0;
+    if (Params.MaterialIndex >= 0)
+    {
+        MatIdx = Params.MaterialIndex;
+    }
+
+    // Add all modules to instanced renderer at once
+    if (ValidCoords.Num() > 0)
+    {
+        Renderer->AddModulesBulk(ValidCoords, MatIdx);
     }
 
     Result.bSuccess = Result.ModulesCreated > 0;
@@ -143,7 +137,7 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::PreviewGeneration(const FF12Gener
 
 int32 UF12ProceduralGenerator::ClearRegion(FIntVector MinCoord, FIntVector MaxCoord, bool bPreserveCore)
 {
-    if (!GridSystem)
+    if (!GridSystem || !Controller || !Controller->InstancedRenderer)
         return 0;
 
     int32 Cleared = 0;
@@ -159,12 +153,11 @@ int32 UF12ProceduralGenerator::ClearRegion(FIntVector MinCoord, FIntVector MaxCo
                     continue;
 
                 FF12GridCoord Coord(X, Y, Z);
-                AActor* Module = GridSystem->GetModuleAt(Coord);
                 
-                if (Module)
+                if (GridSystem->IsOccupied(Coord))
                 {
+                    Controller->InstancedRenderer->RemoveModule(Coord);
                     GridSystem->ClearOccupied(Coord);
-                    Module->Destroy();
                     Cleared++;
                 }
             }
@@ -177,13 +170,23 @@ int32 UF12ProceduralGenerator::ClearRegion(FIntVector MinCoord, FIntVector MaxCo
 
 int32 UF12ProceduralGenerator::ClearAll(bool bPreserveCore)
 {
-    // Clear a large region - this is a bit brute force but works
     return ClearRegion(FIntVector(-100, -100, -100), FIntVector(100, 100, 100), bPreserveCore);
 }
 
 int32 UF12ProceduralGenerator::EstimateModuleCount(const FF12GenerationParams& Params)
 {
     return PreviewGeneration(Params).Num();
+}
+
+// ============================================================================
+// BCC LATTICE VALIDATION
+// ============================================================================
+
+bool UF12ProceduralGenerator::IsValidBCCPosition(const FF12GridCoord& Coord)
+{
+    // Rhombic dodecahedra tessellate on a BCC (body-centered cubic) lattice.
+    // Valid positions are where X + Y + Z is even.
+    return ((Coord.X + Coord.Y + Coord.Z) % 2) == 0;
 }
 
 // ============================================================================
@@ -202,7 +205,11 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateHollowBoxCoords(const FF1
             {
                 if (IsOnBoxShell(X, Y, Z, Params.SizeX, Params.SizeY, Params.SizeZ, Params.WallThickness))
                 {
-                    Coords.Add(ApplyOffset(X, Y, Z, Params));
+                    FF12GridCoord Coord = ApplyOffset(X, Y, Z, Params);
+                    if (IsValidBCCPosition(Coord))
+                    {
+                        Coords.Add(Coord);
+                    }
                 }
             }
         }
@@ -221,7 +228,11 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateSolidBoxCoords(const FF12
         {
             for (int32 Z = 0; Z < Params.SizeZ; Z++)
             {
-                Coords.Add(ApplyOffset(X, Y, Z, Params));
+                FF12GridCoord Coord = ApplyOffset(X, Y, Z, Params);
+                if (IsValidBCCPosition(Coord))
+                {
+                    Coords.Add(Coord);
+                }
             }
         }
     }
@@ -233,7 +244,6 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateHollowSphereCoords(const 
 {
     TArray<FF12GridCoord> Coords;
 
-    // Use the average of sizes as radius
     float Radius = (Params.SizeX + Params.SizeY + Params.SizeZ) / 6.0f;
     float InnerRadius = FMath::Max(0.0f, Radius - Params.WallThickness);
     
@@ -253,7 +263,11 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateHollowSphereCoords(const 
                 
                 if (bInOuter && !bInInner)
                 {
-                    Coords.Add(ApplyOffset(X, Y, Z, Params));
+                    FF12GridCoord Coord = ApplyOffset(X, Y, Z, Params);
+                    if (IsValidBCCPosition(Coord))
+                    {
+                        Coords.Add(Coord);
+                    }
                 }
             }
         }
@@ -280,7 +294,11 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateSolidSphereCoords(const F
             {
                 if (IsInSphere(X, Y, Z, CenterX, CenterY, CenterZ, Radius))
                 {
-                    Coords.Add(ApplyOffset(X, Y, Z, Params));
+                    FF12GridCoord Coord = ApplyOffset(X, Y, Z, Params);
+                    if (IsValidBCCPosition(Coord))
+                    {
+                        Coords.Add(Coord);
+                    }
                 }
             }
         }
@@ -293,7 +311,6 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateCylinderCoords(const FF12
 {
     TArray<FF12GridCoord> Coords;
 
-    // Cylinder along Z axis
     float RadiusX = Params.SizeX / 2.0f;
     float RadiusY = Params.SizeY / 2.0f;
     float CenterX = RadiusX;
@@ -303,14 +320,12 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateCylinderCoords(const FF12
     {
         for (int32 Y = 0; Y < Params.SizeY; Y++)
         {
-            // Check if point is within ellipse
             float DX = (X - CenterX) / RadiusX;
             float DY = (Y - CenterY) / RadiusY;
             float DistSq = DX * DX + DY * DY;
             
             if (DistSq <= 1.0f)
             {
-                // Check if on shell
                 float InnerRadiusX = FMath::Max(0.0f, RadiusX - Params.WallThickness);
                 float InnerRadiusY = FMath::Max(0.0f, RadiusY - Params.WallThickness);
                 float InnerDX = InnerRadiusX > 0 ? (X - CenterX) / InnerRadiusX : 999.0f;
@@ -319,13 +334,16 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateCylinderCoords(const FF12
                 
                 for (int32 Z = 0; Z < Params.SizeZ; Z++)
                 {
-                    // Include if on cylinder wall OR on top/bottom caps
                     bool bOnWall = InnerDistSq > 1.0f;
                     bool bOnCap = Z < Params.WallThickness || Z >= Params.SizeZ - Params.WallThickness;
                     
                     if (bOnWall || bOnCap)
                     {
-                        Coords.Add(ApplyOffset(X, Y, Z, Params));
+                        FF12GridCoord Coord = ApplyOffset(X, Y, Z, Params);
+                        if (IsValidBCCPosition(Coord))
+                        {
+                            Coords.Add(Coord);
+                        }
                     }
                 }
             }
@@ -339,7 +357,6 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateCrossCoords(const FF12Gen
 {
     TArray<FF12GridCoord> Coords;
 
-    // Three intersecting bars
     int32 ArmWidth = FMath::Max(1, Params.WallThickness);
     
     int32 CenterX = Params.SizeX / 2;
@@ -358,7 +375,11 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateCrossCoords(const FF12Gen
                 
                 if (bInXArm || bInYArm || bInZArm)
                 {
-                    Coords.Add(ApplyOffset(X, Y, Z, Params));
+                    FF12GridCoord Coord = ApplyOffset(X, Y, Z, Params);
+                    if (IsValidBCCPosition(Coord))
+                    {
+                        Coords.Add(Coord);
+                    }
                 }
             }
         }
@@ -371,7 +392,6 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateRingCoords(const FF12Gene
 {
     TArray<FF12GridCoord> Coords;
 
-    // Torus in XY plane
     float MajorRadius = FMath::Min(Params.SizeX, Params.SizeY) / 2.0f - Params.WallThickness;
     float MinorRadius = (float)Params.WallThickness;
     
@@ -385,12 +405,10 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateRingCoords(const FF12Gene
         {
             for (int32 Z = 0; Z < Params.SizeZ; Z++)
             {
-                // Distance from center in XY
                 float DX = X - CenterX;
                 float DY = Y - CenterY;
                 float DistXY = FMath::Sqrt(DX * DX + DY * DY);
                 
-                // Distance from the ring centerline
                 float DistFromRing = FMath::Sqrt(
                     FMath::Square(DistXY - MajorRadius) + 
                     FMath::Square(Z - CenterZ)
@@ -398,7 +416,11 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateRingCoords(const FF12Gene
                 
                 if (DistFromRing <= MinorRadius)
                 {
-                    Coords.Add(ApplyOffset(X, Y, Z, Params));
+                    FF12GridCoord Coord = ApplyOffset(X, Y, Z, Params);
+                    if (IsValidBCCPosition(Coord))
+                    {
+                        Coords.Add(Coord);
+                    }
                 }
             }
         }
@@ -413,7 +435,6 @@ TArray<FF12GridCoord> UF12ProceduralGenerator::GenerateRingCoords(const FF12Gene
 
 bool UF12ProceduralGenerator::IsOnBoxShell(int32 X, int32 Y, int32 Z, int32 SizeX, int32 SizeY, int32 SizeZ, int32 Thickness)
 {
-    // Check if point is within Thickness distance of any face
     bool bNearMinX = X < Thickness;
     bool bNearMaxX = X >= SizeX - Thickness;
     bool bNearMinY = Y < Thickness;
@@ -441,7 +462,6 @@ FF12GridCoord UF12ProceduralGenerator::ApplyOffset(int32 X, int32 Y, int32 Z, co
     
     if (Params.bCenterOnOffset)
     {
-        // Shift so center of shape is at offset
         OffsetX -= Params.SizeX / 2;
         OffsetY -= Params.SizeY / 2;
         OffsetZ -= Params.SizeZ / 2;
