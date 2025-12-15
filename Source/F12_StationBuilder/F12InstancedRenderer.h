@@ -188,7 +188,11 @@ public:
     // Get face transforms for ghost preview
     UFUNCTION(BlueprintCallable, Category = "F12|Geometry")
     const TArray<FTransform>& GetFaceTransforms() const { return FaceTransforms; }
-
+    
+    // Add multiple modules with individual materials (single rebuild)
+    UFUNCTION(BlueprintCallable, Category = "F12|Modules")
+    void AddModulesWithMaterials(const TArray<FF12GridCoord>& GridCoords, const TArray<int32>& MaterialIndices);
+    
 protected:
     // HISM components organized by [FaceIndex * NumMaterials + MaterialIndex]
     UPROPERTY()

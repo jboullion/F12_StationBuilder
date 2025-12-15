@@ -5,6 +5,8 @@
 #include "F12BuilderController.h"
 #include "F12InstancedRenderer.h"
 #include "F12ProceduralGenerator.h"
+#include "F12StationGenerator.h"
+#include "F12StationGeneratorWidget.h"
 #include "F12GeneratorWidget.h"
 #include "F12BuilderPawn.h"
 #include "Components/StaticMeshComponent.h"
@@ -89,6 +91,25 @@ void AF12BuilderController::BeginPlay()
             UE_LOG(LogTemp, Log, TEXT("Generator Widget created"));
         }
     }
+    
+    // Create station generator
+    StationGenerator = NewObject<UF12StationGenerator>(this, TEXT("StationGenerator"));
+    if (StationGenerator)
+    {
+        StationGenerator->Initialize(GridSystem, this);
+        UE_LOG(LogTemp, Log, TEXT("Station Generator created"));
+    }
+
+    // Spawn the station generator widget
+    if (StationGeneratorWidgetClass)
+    {
+        StationGeneratorWidget = CreateWidget<UF12StationGeneratorWidget>(this, StationGeneratorWidgetClass);
+        if (StationGeneratorWidget)
+        {
+            StationGeneratorWidget->AddToViewport(11);  // Above other UI
+            UE_LOG(LogTemp, Log, TEXT("Station Generator Widget created"));
+        }
+    }
 
     // Create ghost preview mesh components
     InitializeGhostPreview();
@@ -121,7 +142,8 @@ void AF12BuilderController::SetupInputComponent()
     InputComponent->BindAction("Modifier", IE_Released, this, &AF12BuilderController::OnModifierReleased);
 
     InputComponent->BindAction("ToggleGenerator", IE_Pressed, this, &AF12BuilderController::OnToggleGenerator);
-    
+    InputComponent->BindAction("ToggleStationGenerator", IE_Pressed, this, &AF12BuilderController::OnToggleStationGenerator);
+
     // Camera rotation (handled by controller, forwarded to pawn)
     InputComponent->BindAction("CameraRotate", IE_Pressed, this, &AF12BuilderController::OnCameraRotatePressed);
     InputComponent->BindAction("CameraRotate", IE_Released, this, &AF12BuilderController::OnCameraRotateReleased);
@@ -983,4 +1005,22 @@ int32 AF12BuilderController::GetModuleCount() const
 FString AF12BuilderController::GetPerformanceStats() const
 {
     return InstancedRenderer ? InstancedRenderer->GetPerformanceStats() : TEXT("No renderer");
+}
+
+void AF12BuilderController::OnToggleStationGenerator()
+{
+    ToggleStationGeneratorPanel();
+}
+
+void AF12BuilderController::ToggleStationGeneratorPanel()
+{
+    if (StationGeneratorWidget)
+    {
+        StationGeneratorWidget->TogglePanel();
+    }
+}
+
+bool AF12BuilderController::IsStationGeneratorPanelVisible() const
+{
+    return StationGeneratorWidget && StationGeneratorWidget->IsPanelVisible();
 }

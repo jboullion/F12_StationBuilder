@@ -8,12 +8,14 @@
 #include "GameFramework/PlayerController.h"
 #include "Blueprint/UserWidget.h"
 #include "F12GridSystem.h"
+#include "F12StationGenerator.h"
 #include "F12BuilderController.generated.h"
 
 class AF12InstancedRenderer;
 class UF12ProceduralGenerator;
 class UF12GeneratorWidget;
 class AF12BuilderPawn;
+class UF12StationGeneratorWidget;
 
 // Builder modes
 UENUM(BlueprintType)
@@ -86,6 +88,20 @@ public:
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|Generation")
     UF12GeneratorWidget* GeneratorWidget;
+    
+    // === STATION GENERATOR ===
+    
+    // Station generator instance
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|StationGenerator")
+    UF12StationGenerator* StationGenerator;
+
+    // Station generator widget class (set in Blueprint)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Builder|StationGenerator")
+    TSubclassOf<UUserWidget> StationGeneratorWidgetClass;
+
+    // Station generator widget instance
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Builder|StationGenerator")
+    UF12StationGeneratorWidget* StationGeneratorWidget;
 
     // === MODE SWITCHING ===
     
@@ -127,6 +143,14 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Builder|Generation")
     void GenerateModules(const TArray<FF12GridCoord>& Coords);
 
+    // Toggle station generator panel
+    UFUNCTION(BlueprintCallable, Category = "Builder|StationGenerator")
+    void ToggleStationGeneratorPanel();
+
+    // Check if station generator panel is visible
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|StationGenerator")
+    bool IsStationGeneratorPanelVisible() const;
+    
     // === HUD HELPERS ===
     
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Builder|HUD")
@@ -202,6 +226,8 @@ protected:
     void HideGhost();
     void HideAllGhosts();
     void PlaceDraggedModules();
+    
+    void OnToggleStationGenerator();
 
     // Highlight tracking for delete mode
     FF12GridCoord LastHighlightCoord;

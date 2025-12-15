@@ -698,3 +698,44 @@ FString AF12InstancedRenderer::GetPerformanceStats() const
         DrawCalls
     );
 }
+
+void AF12InstancedRenderer::AddModulesWithMaterials(const TArray<FF12GridCoord>& GridCoords, const TArray<int32>& MaterialIndices)
+{
+    if (GridCoords.Num() == 0)
+        return;
+
+    if (HISMComponents.Num() == 0)
+    {
+        UE_LOG(LogTemp, Error, TEXT("AddModulesWithMaterials: No HISM components!"));
+        return;
+    }
+
+    bool bHasMaterials = (MaterialIndices.Num() == GridCoords.Num());
+    int32 AddedCount = 0;
+
+    for (int32 i = 0; i < GridCoords.Num(); i++)
+    {
+        const FF12GridCoord& Coord = GridCoords[i];
+        
+        if (ModuleData.Contains(Coord))
+            continue;
+
+        int32 MatIndex = bHasMaterials ? FMath::Clamp(MaterialIndices[i], 0, NumMaterials - 1) : 0;
+
+        FF12ModuleInstanceData Data;
+        for (int32 j = 0; j < 12; j++)
+        {
+            Data.TileMaterials[j] = MatIndex;
+            Data.TileVisibility[j] = true;
+        }
+        
+        ModuleData.Add(Coord, Data);
+        AddedCount++;
+    }
+
+    if (AddedCount > 0)
+    {
+        RebuildInstances();
+        UE_LOG(LogTemp, Log, TEXT("AddModulesWithMaterials: Added %d modules with single rebuild"), AddedCount);
+    }
+}
